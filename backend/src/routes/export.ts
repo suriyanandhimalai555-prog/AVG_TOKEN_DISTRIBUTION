@@ -1,0 +1,354 @@
+import { Router, Request, Response } from "express";
+import fs from "fs";
+import path from "path";
+import { Session } from "../models/Session";
+import { Wallet } from "../models/Wallet";
+import { Batch } from "../models/Batch";
+import { getScriptsDir } from "../lib/runner";
+import ExcelJS from "exceljs";
+import { ethers } from "ethers";
+import { requireAuth } from "../middleware/requireAuth";
+import { requirePlan } from "../middleware/requirePlan";
+
+const router = Router();
+const ERC20_ABI = [
+  "function name() view returns (string)",
+];
+interface PlanEntry {
+  index: number;
+  txHash?: string | null;
+  sent?: boolean;
+}
+
+function csvEscape(value: string): string {
+  if (value.includes(",") || value.includes("\"") || value.includes("\n")) {
+    return `"${value.replace(/"/g, "\"\"")}"`;
+  }
+  return value;
+}
+
+/** Parse one CSV line with RFC-style double-quoted fields (handles commas inside quotes). */
+function parseCsvLine(line: string): string[] {
+  const out: string[] = [];
+  let cur = "";
+  let inQuote = false;
+  let i = 0;
+  while (i < line.length) {
+    const c = line[i]!;
+    if (inQuote) {
+      if (c === '"') {
+        if (line[i + 1] === '"') {
+          cur += '"';
+          i += 2;
+          continue;
+        }
+        inQuote = false;
+        i++;
+        continue;
+      }
+      cur += c;
+      i++;
+      continue;
+    }
+    if (c === '"') {
+      inQuote = true;
+      i++;
+      continue;
+    }
+    if (c === ",") {
+      out.push(cur);
+      cur = "";
+      i++;
+      continue;
+    }
+    cur += c;
+    i++;
+  }
+  out.push(cur);
+  return out;
+}
+
+/**
+ * When wallets.csv includes a `mnemonic` column (INDEPENDENT_SEEDS), map wallet index → seed phrase.
+ * HD mode CSV has no mnemonic column — returns empty map (caller uses session master mnemonic).
+ */
+function loadMnemonicByWalletIndex(scriptsDir: string): Map<number, string> {
+  const map = new Map<number, string>();
+  const csvPath = path.join(scriptsDir, "output", "wallets.csv");
+  if (!fs.existsSync(csvPath)) return map;
+  let raw: string;
+  try {
+    raw = fs.readFileSync(csvPath, "utf8");
+  } catch {
+    return map;
+  }
+  const lines = raw.trim().split(/\r?\n/);
+  if (lines.length < 2) return map;
+  const header = parseCsvLine(lines[0]!);
+  const indexCol = header.findIndex((h) => h.trim().toLowerCase() === "index");
+  const mnemonicCol = header.findIndex((h) => h.trim().toLowerCase() === "mnemonic");
+  if (indexCol < 0 || mnemonicCol < 0) return map;
+
+  for (let li = 1; li < lines.length; li++) {
+    const parts = parseCsvLine(lines[li]!);
+    if (parts.length <= Math.max(indexCol, mnemonicCol)) continue;
+    const idx = parseInt(parts[indexCol]!.trim(), 10);
+    if (!Number.isFinite(idx)) continue;
+    const phrase = parts[mnemonicCol]!.trim();
+    if (phrase) map.set(idx, phrase);
+  }
+  return map;
+}
+
+async function resolveTokenName(tokenAddress: string): Promise<string> {
+  let tokenName = "TOKEN";
+  try {
+    const rpcUrl =
+      process.env.ALCHEMY_RPC_URL ||
+      process.env.FALLBACK_RPC_1 ||
+      process.env.FALLBACK_RPC_2 ||
+      "";
+    if (rpcUrl && tokenAddress) {
+      const provider = new ethers.JsonRpcProvider(rpcUrl);
+      const token = new ethers.Contract(tokenAddress, ERC20_ABI, provider);
+      tokenName = String(await token.name());
+    }
+  } catch {
+    // keep fallback tokenName
+  }
+  return tokenName;
+}
+
+function rpcUrlForSession(network: string): string {
+  if (network === "bscTestnet") {
+    return (
+      process.env.BSC_TESTNET_RPC_URL ||
+      process.env.ALCHEMY_RPC_URL ||
+      process.env.FALLBACK_RPC_1 ||
+      ""
+    );
+  }
+  return (
+    process.env.ALCHEMY_RPC_URL ||
+    process.env.FALLBACK_RPC_1 ||
+    process.env.FALLBACK_RPC_2 ||
+    ""
+  );
+}
+
+function networkDisplayName(network: string): string {
+  if (network === "bscTestnet") return "BSC Testnet";
+  if (network === "bscMainnet") return "BSC Mainnet";
+  return network;
+}
+
+/** Current native coin balance per address (best-effort at export time). */
+async function nativeBalanceByAddress(addresses: string[], rpcUrl: string): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  if (!rpcUrl) {
+    for (const a of addresses) out.set(a, "N/A (no RPC)");
+    return out;
+  }
+  const provider = new ethers.JsonRpcProvider(rpcUrl);
+  const chunk = 35;
+  for (let i = 0; i < addresses.length; i += chunk) {
+    const slice = addresses.slice(i, i + chunk);
+    const results = await Promise.all(
+      slice.map((addr) =>
+        provider.getBalance(addr).then(
+          (b) => ethers.formatEther(b),
+          () => "N/A"
+        )
+      )
+    );
+    for (let j = 0; j < slice.length; j++) {
+      out.set(slice[j], results[j]);
+    }
+  }
+  return out;
+}
+
+// GET /api/export?sessionId=xxx&file=csv|xlsx|wallets|json
+router.get("/", requireAuth, requirePlan, async (req: Request, res: Response) => {
+  try {
+    const { sessionId, file } = req.query as { sessionId: string; file: string };
+    if (!sessionId) return res.status(400).json({ error: "sessionId is required" });
+    if (!["csv", "xlsx", "wallets", "json"].includes(file)) {
+      return res.status(400).json({ error: "file must be one of: csv, xlsx, wallets, json" });
+    }
+
+    const session = await Session.findById(sessionId).lean();
+    if (!session) return res.status(404).json({ error: "Session not found" });
+
+    if (!session.userId || session.userId.toString() !== req.user!._id.toString()) {
+      return res.status(404).json({ error: "Session not found" });
+    }
+
+    const scriptsDir = getScriptsDir();
+
+    if (file === "wallets") {
+      const csvPath = path.join(scriptsDir, "output", "wallets.csv");
+      if (!fs.existsSync(csvPath)) {
+        return res.status(404).json({ error: "wallets.csv not found" });
+      }
+      res.setHeader("Content-Disposition", "attachment; filename=wallets.csv");
+      res.setHeader("Content-Type", "text/csv");
+      fs.createReadStream(csvPath).pipe(res);
+      return;
+    }
+
+    if (file === "json") {
+      const planPath = path.join(scriptsDir, "output", "distribution-plan.json");
+      if (!fs.existsSync(planPath)) {
+        return res.status(404).json({ error: "distribution-plan.json not found" });
+      }
+      res.setHeader("Content-Disposition", "attachment; filename=distribution-plan.json");
+      res.setHeader("Content-Type", "application/json");
+      fs.createReadStream(planPath).pipe(res);
+      return;
+    }
+
+    // For csv and xlsx, fetch from MongoDB
+    const wallets = await Wallet.find({ sessionId })
+      .sort({ index: 1 })
+      .lean();
+    const tokenNameResolved =
+      (session.tokenName && session.tokenName.trim()) ||
+      (await resolveTokenName(session.tokenAddress));
+    const rpcUrl = rpcUrlForSession(session.network);
+    const nativeByAddr = await nativeBalanceByAddress(
+      wallets.map((w) => w.address),
+      rpcUrl
+    );
+
+    // Use distribution-plan.json as authoritative source of per-wallet tx hashes.
+    // This avoids mismatch when DB sync lags or session is partially updated.
+    const planPath = path.join(scriptsDir, "output", "distribution-plan.json");
+    const txHashByIndex = new Map<number, string>();
+    if (fs.existsSync(planPath)) {
+      try {
+        const plan = JSON.parse(fs.readFileSync(planPath, "utf8")) as PlanEntry[];
+        for (const p of plan) {
+          if (typeof p.index === "number" && p.sent && p.txHash) {
+            txHashByIndex.set(p.index, String(p.txHash));
+          }
+        }
+      } catch {
+        // ignore malformed plan file; fallback to DB tx hashes
+      }
+    }
+
+    const masterMnemonic = session.masterMnemonic ?? "";
+    const mnemonicByIndex = loadMnemonicByWalletIndex(scriptsDir);
+    const networkLabel = networkDisplayName(session.network);
+
+    const seedForWallet = (walletIndex: number): string =>
+      mnemonicByIndex.get(walletIndex) ?? masterMnemonic;
+
+    if (file === "csv") {
+      res.setHeader("Content-Disposition", "attachment; filename=distribution-log.csv");
+      res.setHeader("Content-Type", "text/csv");
+
+      const lines = [
+        "Wallet Address,Seed Phrase (Mnemonic),Network,Native Balance,Token Name,Transaction Hash,Token Balance,Status,Failure Reason",
+      ];
+      for (const w of wallets) {
+        const txHash = txHashByIndex.get(w.index) ?? (w.txHash ?? "");
+        const sentResolved = Boolean(w.sent || txHash);
+        const failedResolved =
+          sentResolved
+            ? false
+            : Boolean(
+                w.failed ||
+                ((session.status === "stopped" || session.status === "error" || session.status === "done") && !sentResolved)
+              );
+        const distributedTokens = String(w.amount ?? 0);
+        const status = sentResolved ? "CONFIRMED" : (failedResolved ? "FAILED" : "PENDING");
+        const failureReason = sentResolved
+          ? ""
+          : (
+              w.failureReason ??
+              (session.status === "stopped"
+                ? "Stopped by user (remaining wallets cancelled)"
+                : session.status === "error" || session.status === "done"
+                  ? "Failed to send (insufficient gas/BNB or batch failure)"
+                  : "")
+            );
+        lines.push(
+          [
+            csvEscape(w.address),
+            csvEscape(seedForWallet(w.index)),
+            csvEscape(networkLabel),
+            csvEscape(nativeByAddr.get(w.address) ?? "0.0"),
+            csvEscape(tokenNameResolved),
+            csvEscape(String(txHash)),
+            csvEscape(distributedTokens),
+            csvEscape(status),
+            csvEscape(failureReason),
+          ].join(",")
+        );
+      }
+      return res.send(lines.join("\n"));
+    }
+
+    if (file === "xlsx") {
+      const workbook = new ExcelJS.Workbook();
+      const sheet = workbook.addWorksheet("Wallet Distribution");
+
+      sheet.columns = [
+        { header: "Wallet Address", key: "walletAddress", width: 44 },
+        { header: "Seed Phrase (Mnemonic)", key: "mnemonic", width: 56 },
+        { header: "Network", key: "network", width: 16 },
+        { header: "Native Balance", key: "nativeBalance", width: 18 },
+        { header: "Token Name", key: "tokenName", width: 20 },
+        { header: "Transaction Hash", key: "transactionHash", width: 68 },
+        { header: "Token Balance", key: "tokenBalance", width: 16 },
+        { header: "Status", key: "status", width: 14 },
+        { header: "Failure Reason", key: "failureReason", width: 52 },
+      ];
+
+      for (const w of wallets) {
+        const txHash = txHashByIndex.get(w.index) ?? (w.txHash ?? "");
+        const sentResolved = Boolean(w.sent || txHash);
+        const failedResolved =
+          sentResolved
+            ? false
+            : Boolean(
+                w.failed ||
+                ((session.status === "stopped" || session.status === "error" || session.status === "done") && !sentResolved)
+              );
+        sheet.addRow({
+          walletAddress: w.address,
+          mnemonic: seedForWallet(w.index),
+          network: networkLabel,
+          nativeBalance: nativeByAddr.get(w.address) ?? "0.0",
+          tokenName: tokenNameResolved,
+          transactionHash: txHash,
+          tokenBalance: String(w.amount ?? 0),
+          status: sentResolved ? "CONFIRMED" : (failedResolved ? "FAILED" : "PENDING"),
+          failureReason: sentResolved
+            ? ""
+            : (
+                w.failureReason ??
+                (session.status === "stopped"
+                  ? "Stopped by user (remaining wallets cancelled)"
+                  : session.status === "error" || session.status === "done"
+                    ? "Failed to send (insufficient gas/BNB or batch failure)"
+                    : "")
+              ),
+        });
+      }
+
+      res.setHeader("Content-Disposition", "attachment; filename=distribution-log.xlsx");
+      res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+
+      await workbook.xlsx.write(res);
+      return res.end();
+    }
+  } catch (err) {
+    console.error("[export GET]", err);
+    return res.status(500).json({ error: "Failed to export file" });
+  }
+});
+
+export default router;

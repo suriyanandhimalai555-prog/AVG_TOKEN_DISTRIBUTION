@@ -1,0 +1,39 @@
+# Example: serve Vite production build for holderforge.io (Ubuntu / EC2)
+# 1. npm ci && npm run build
+# 2. Copy dist/ to /var/www/holderforge/dist
+# 3. Include this in /etc/nginx/sites-available/holderforge
+
+server {
+    listen 80;
+    listen [::]:80;
+    server_name holderforge.io www.holderforge.io;
+
+    root /var/www/holderforge/dist;
+    index index.html;
+
+    # Never serve TypeScript source in production
+    location ~* \.(tsx?|ts)$ {
+        return 404;
+    }
+
+    location /assets/ {
+        try_files $uri =404;
+        add_header Cache-Control "public, max-age=31536000, immutable";
+    }
+
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+
+    # Correct MIME types (fixes application/octet-stream on .js)
+    types {
+        application/javascript js mjs;
+        text/css css;
+        text/html html;
+        image/png png;
+        image/jpeg jpg jpeg;
+        image/svg+xml svg;
+        application/json json;
+        font/woff2 woff2;
+    }
+}

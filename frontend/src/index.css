@@ -1,0 +1,358 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Theme tokens — light default; `html.dark` matches legacy navy dashboard */
+:root {
+  --app-canvas: #fafafa;
+  --app-surface: #ffffff;
+  --app-panel: #f4f4f5;
+  --app-elevated: #ececee;
+  --app-border: rgba(40, 40, 40, 0.12);
+  /* Primary copy: strong contrast on #FAFAFA canvas */
+  --app-text: #282828;
+  /* Darker than before so `text-xs` / relaxed body stays crisp on #fafafa */
+  --app-text-secondary: #303030;
+  --app-muted: #454545;
+  --app-accent-dim: rgba(59, 130, 246, 0.12);
+  --app-shadow-card: 0 1px 3px rgba(0, 0, 0, 0.06), 0 1px 2px rgba(0, 0, 0, 0.04);
+  --app-ring-offset: #fafafa;
+  --app-input-bg: #ffffff;
+  --app-input-border: rgba(40, 40, 40, 0.15);
+  --app-hover-overlay: rgba(40, 40, 40, 0.06);
+  /* Placeholder: no extra opacity — keeps small mono copy readable */
+  --app-placeholder: rgba(40, 40, 40, 0.5);
+}
+
+html.dark {
+  --app-canvas: #0b0f1f;
+  --app-surface: #111827;
+  --app-panel: #1e293b;
+  --app-elevated: #1e293b;
+  --app-border: rgba(250, 250, 250, 0.12);
+  /* Primary copy: near-white on navy canvas */
+  --app-text: #fafafa;
+  /* Labels / secondary lines on dark surfaces — brighter than before */
+  --app-text-secondary: #e8e8ed;
+  --app-muted: #c4c8d0;
+  --app-placeholder: rgba(250, 250, 250, 0.55);
+  --app-accent-dim: rgba(59, 130, 246, 0.15);
+  --app-shadow-card: 0 4px 6px -1px rgba(0, 0, 0, 0.3), 0 2px 4px -1px rgba(0, 0, 0, 0.2);
+  --app-ring-offset: #0b0f1f;
+  --app-input-bg: rgba(30, 41, 59, 0.75);
+  --app-input-border: rgba(250, 250, 250, 0.14);
+  --app-hover-overlay: rgba(255, 255, 255, 0.06);
+}
+
+/* Marketing Landing only: same tokens as html.dark so / stays dark while global theme may be light. Keep in sync with html.dark above. */
+.landing-root {
+  color-scheme: dark;
+  --app-canvas: #0b0f1f;
+  --app-surface: #111827;
+  --app-panel: #1e293b;
+  --app-elevated: #1e293b;
+  --app-border: rgba(250, 250, 250, 0.12);
+  --app-text: #fafafa;
+  --app-text-secondary: #e8e8ed;
+  --app-muted: #c4c8d0;
+  --app-placeholder: rgba(250, 250, 250, 0.55);
+  --app-accent-dim: rgba(59, 130, 246, 0.15);
+  --app-shadow-card: 0 4px 6px -1px rgba(0, 0, 0, 0.3), 0 2px 4px -1px rgba(0, 0, 0, 0.2);
+  --app-ring-offset: #0b0f1f;
+  --app-input-bg: rgba(30, 41, 59, 0.75);
+  --app-input-border: rgba(250, 250, 250, 0.14);
+  --app-hover-overlay: rgba(255, 255, 255, 0.06);
+}
+
+@layer base {
+  * {
+    box-sizing: border-box;
+  }
+
+  html {
+    font-family: Poppins, system-ui, sans-serif;
+    font-weight: 400;
+    background-color: var(--app-canvas);
+    color: var(--app-text);
+    color-scheme: light;
+  }
+
+  html.dark {
+    color-scheme: dark;
+  }
+
+  body {
+    margin: 0;
+    padding: 0;
+  }
+
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  ::-webkit-scrollbar-track {
+    background: #e2e8f0;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: #94a3b8;
+    border-radius: 6px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: #64748b;
+  }
+
+  html.dark ::-webkit-scrollbar-track {
+    background: #111827;
+  }
+  html.dark ::-webkit-scrollbar-thumb {
+    background: #334155;
+  }
+  html.dark ::-webkit-scrollbar-thumb:hover {
+    background: #475569;
+  }
+
+  input[type="range"] {
+    -webkit-appearance: none;
+    height: 6px;
+    background: #e2e8f0;
+    outline: none;
+    border-radius: 6px;
+  }
+  html.dark input[type="range"] {
+    background: #1e293b;
+  }
+  input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 16px;
+    height: 16px;
+    background: linear-gradient(to right, #3b82f6, #60a5fa);
+    cursor: pointer;
+    border-radius: 50%;
+  }
+
+  ::selection {
+    background: rgba(59, 130, 246, 0.25);
+    color: var(--app-text);
+  }
+  html.dark ::selection {
+    background: rgba(59, 130, 246, 0.35);
+    color: #fafafa;
+  }
+}
+
+@layer components {
+  .app-canvas {
+    background-color: var(--app-canvas);
+    color: var(--app-text);
+  }
+  .app-surface {
+    background-color: var(--app-surface);
+  }
+  .app-panel {
+    background-color: var(--app-panel);
+  }
+  .app-text {
+    color: var(--app-text);
+  }
+  .app-text-secondary {
+    color: var(--app-text-secondary);
+  }
+  .app-muted {
+    color: var(--app-muted);
+  }
+  .app-border {
+    border-color: var(--app-border);
+  }
+
+  .app-card {
+    border-radius: 0.875rem;
+    border: 1px solid var(--app-border);
+    background-color: var(--app-surface);
+    box-shadow: var(--app-shadow-card);
+  }
+
+  .app-input {
+    width: 100%;
+    border-radius: 0.5rem;
+    border: 1px solid var(--app-input-border);
+    background-color: var(--app-input-bg);
+    color: var(--app-text);
+    padding: 0.5rem 0.75rem;
+    font-size: 0.875rem;
+    outline: none;
+    transition: border-color 0.15s, box-shadow 0.15s;
+  }
+  .app-input:focus {
+    border-color: #3b82f6;
+    box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.25);
+  }
+  .app-input::placeholder {
+    color: var(--app-placeholder);
+  }
+
+  .corp-card {
+    border-radius: 0.875rem;
+    border: 1px solid var(--app-border);
+    background-color: var(--app-surface);
+    box-shadow: var(--app-shadow-card);
+  }
+
+  /** Marketing pricing tiers — glassy surface + soft glow (additive; does not replace .corp-card elsewhere) */
+  .pricing-tier-card {
+    position: relative;
+    border-radius: 1rem;
+    border: 1px solid var(--app-border);
+    background-color: color-mix(in srgb, var(--app-surface) 92%, transparent);
+    backdrop-filter: blur(14px);
+    -webkit-backdrop-filter: blur(14px);
+    box-shadow:
+      var(--app-shadow-card),
+      0 0 0 1px rgba(59, 130, 246, 0.05),
+      0 14px 42px -18px rgba(15, 23, 42, 0.2);
+    transition: transform 0.22s ease, box-shadow 0.22s ease, border-color 0.22s ease;
+  }
+  html.dark .pricing-tier-card {
+    background-color: color-mix(in srgb, var(--app-surface) 78%, rgba(15, 23, 42, 0.85));
+    box-shadow:
+      var(--app-shadow-card),
+      0 0 0 1px rgba(96, 165, 250, 0.07),
+      0 0 32px -10px rgba(59, 130, 246, 0.22);
+  }
+  .pricing-tier-card:hover {
+    transform: translateY(-3px);
+    border-color: rgba(59, 130, 246, 0.35);
+    box-shadow:
+      var(--app-shadow-card),
+      0 0 0 1px rgba(59, 130, 246, 0.14),
+      0 18px 48px -14px rgba(15, 23, 42, 0.28);
+  }
+  html.dark .pricing-tier-card:hover {
+    box-shadow:
+      var(--app-shadow-card),
+      0 0 0 1px rgba(96, 165, 250, 0.18),
+      0 0 44px -8px rgba(59, 130, 246, 0.32);
+  }
+  .pricing-tier-card--featured {
+    border-color: rgba(59, 130, 246, 0.42);
+    box-shadow:
+      var(--app-shadow-card),
+      0 0 0 1px rgba(59, 130, 246, 0.18),
+      0 0 48px -10px rgba(59, 130, 246, 0.28),
+      0 22px 56px -18px rgba(15, 23, 42, 0.35);
+  }
+  html.dark .pricing-tier-card--featured {
+    box-shadow:
+      var(--app-shadow-card),
+      0 0 0 1px rgba(96, 165, 250, 0.22),
+      0 0 56px -8px rgba(59, 130, 246, 0.38),
+      0 24px 60px -16px rgba(0, 0, 0, 0.45);
+  }
+  .pricing-tier-card--featured:hover {
+    border-color: rgba(59, 130, 246, 0.55);
+  }
+
+  /* Premium dashboard — additive utilities (pair with theme tokens / Tailwind as needed) */
+  .dash-card {
+    border-radius: 1rem;
+    border: 1px solid var(--app-border);
+    background-color: var(--app-surface);
+    box-shadow: var(--app-shadow-card), 0 0 0 1px rgba(0, 0, 0, 0.035);
+  }
+  html.dark .dash-card {
+    box-shadow: var(--app-shadow-card), 0 0 0 1px rgba(255, 255, 255, 0.055);
+  }
+
+  .dash-section-title {
+    font-size: 0.6875rem;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--app-muted);
+  }
+
+  .dash-section-desc {
+    font-size: 0.75rem;
+    line-height: 1.5;
+    color: var(--app-text-secondary);
+    margin-top: 0.125rem;
+  }
+
+  /** Use with `.app-input` — min touch target + smooth focus */
+  .dash-input {
+    min-height: 44px;
+    transition: border-color 0.15s ease, box-shadow 0.15s ease, background-color 0.15s ease;
+  }
+
+  .dash-segment {
+    display: inline-flex;
+    border-radius: 0.5rem;
+    border: 1px solid var(--app-border);
+    padding: 0.125rem;
+    background-color: var(--app-panel);
+    gap: 0.125rem;
+  }
+
+  .dash-segment-btn {
+    border-radius: 0.375rem;
+    padding: 0.5rem 0.75rem;
+    font-size: 0.75rem;
+    font-weight: 500;
+    line-height: 1.2;
+    color: var(--app-text-secondary);
+    transition: color 0.15s ease, background-color 0.15s ease, box-shadow 0.15s ease;
+  }
+
+  .dash-segment-btn:hover {
+    background-color: var(--app-hover-overlay);
+    color: var(--app-text);
+  }
+
+  .dash-segment-btn-active {
+    background: linear-gradient(to right, #3b82f6, #60a5fa);
+    color: #ffffff;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12);
+  }
+
+  .dash-segment-btn-active:hover {
+    filter: brightness(1.05);
+    color: #ffffff;
+  }
+
+  .btn-gradient-primary {
+    @apply inline-flex items-center justify-center gap-2 rounded-lg bg-gradient-to-r from-[#3B82F6] to-[#60A5FA] px-5 py-2.5 text-sm font-medium text-white shadow-md transition hover:brightness-110 focus:outline-none focus:ring-2 focus:ring-[#60A5FA] focus:ring-offset-2;
+    --tw-ring-offset-color: var(--app-ring-offset);
+  }
+
+  .btn-outline-blue {
+    @apply inline-flex items-center justify-center gap-2 rounded-lg border-2 border-[#3B82F6] bg-transparent px-5 py-2.5 text-sm font-medium transition focus:outline-none focus:ring-2 focus:ring-[#60A5FA] focus:ring-offset-2;
+    color: #2563eb;
+    --tw-ring-offset-color: var(--app-ring-offset);
+  }
+  html.dark .btn-outline-blue {
+    @apply text-[#60A5FA];
+  }
+  .btn-outline-blue:hover {
+    background-color: rgba(59, 130, 246, 0.08);
+  }
+  html.dark .btn-outline-blue:hover {
+    background-color: rgba(59, 130, 246, 0.12);
+  }
+}
+
+@layer utilities {
+  .font-mono {
+    font-family: JetBrains Mono, Fira Code, monospace;
+  }
+  .font-poppins-primary {
+    font-family: Poppins, system-ui, sans-serif;
+    font-weight: 400;
+  }
+  .font-poppins-secondary {
+    font-family: Poppins, system-ui, sans-serif;
+    font-weight: 500;
+  }
+  .font-poppins-tertiary {
+    font-family: Poppins, system-ui, sans-serif;
+    font-weight: 300;
+  }
+}

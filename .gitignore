@@ -1,0 +1,38 @@
+# Environment / secrets
+backend/.env
+backend/.env.*
+!backend/.env.example
+
+# Frontend environment files
+frontend/.env.local
+frontend/.env.production
+
+# Dependencies
+**/node_modules/
+
+# Build output
+**/dist/
+
+# Hardhat generated files
+backend/artifacts/
+backend/cache/
+
+# Generated distribution output
+backend/output/
+
+# Local backup files
+**/*.backup
+**/*.backup.*
+**/*backup*/
+**/*backups*/
+
+# Local cookies
+**/cookies.txt
+
+# Logs
+**/*.log
+
+# OS/editor files
+.DS_Store
+.vscode/
+.idea/

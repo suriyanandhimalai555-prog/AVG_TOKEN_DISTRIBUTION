@@ -1,0 +1,8 @@
+node_modules
+.git
+.github
+dist
+.vscode
+.env
+Dockerfile.old
+README.md

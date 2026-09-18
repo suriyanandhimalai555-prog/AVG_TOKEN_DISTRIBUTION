@@ -1,0 +1,20 @@
+version: "3.9"
+
+services:
+  holderforge-backend:
+    image: ghcr.io/suriyanandhimalai555-prog/avg-token-backend:latest
+    container_name: holderforge-backend
+    restart: always
+    env_file:
+      - ./backend/.env
+    ports:
+      - "4002:4002"
+
+  holderforge-frontend:
+    image: ghcr.io/suriyanandhimalai555-prog/avg-token-frontend:latest
+    container_name: holderforge-frontend
+    restart: always
+    ports:
+      - "3002:80"
+    depends_on:
+      - holderforge-backend
