@@ -54,7 +54,6 @@ jobs:
           tags: |
             ${{ env.BACKEND_IMAGE }}:${{ github.sha }}
           cache-from: type=gha,scope=holderforge-backend
-          cache-to: type=gha,mode=max,scope=holderforge-backend
 
   build-frontend:
     name: Build and Push Frontend ARM64
@@ -91,7 +90,6 @@ jobs:
           tags: |
             ${{ env.FRONTEND_IMAGE }}:${{ github.sha }}
           cache-from: type=gha,scope=holderforge-frontend
-          cache-to: type=gha,mode=max,scope=holderforge-frontend
 
   deploy:
     name: Deploy to k3s
@@ -134,8 +132,10 @@ jobs:
 
             kubectl cluster-info >/dev/null
 
+            echo "Applying namespace..."
             kubectl apply -f k8s/namespace.yaml
 
+            echo "Updating GHCR pull secret..."
             kubectl create secret docker-registry holderforge-ghcr \
               --namespace "$NAMESPACE" \
               --docker-server=ghcr.io \
@@ -144,38 +144,47 @@ jobs:
               --dry-run=client \
               -o yaml | kubectl apply -f -
 
+            echo "Applying backend persistent storage..."
             kubectl apply -f k8s/backend-storage.yaml
 
             BACKEND_EXISTS="no"
             FRONTEND_EXISTS="no"
 
-            if kubectl get deployment holderforge-backend -n "$NAMESPACE" >/dev/null 2>&1; then
+            if kubectl get deployment holderforge-backend \
+              -n "$NAMESPACE" >/dev/null 2>&1; then
               BACKEND_EXISTS="yes"
             fi
 
-            if kubectl get deployment holderforge-frontend -n "$NAMESPACE" >/dev/null 2>&1; then
+            if kubectl get deployment holderforge-frontend \
+              -n "$NAMESPACE" >/dev/null 2>&1; then
               FRONTEND_EXISTS="yes"
             fi
 
             echo "Existing backend deployment: ${BACKEND_EXISTS}"
             echo "Existing frontend deployment: ${FRONTEND_EXISTS}"
 
+            echo "Applying backend deployment..."
             sed "s#__IMAGE_TAG__#${IMAGE_TAG}#g" \
               k8s/backend.yaml | kubectl apply -f -
 
+            echo "Applying frontend deployment..."
             sed "s#__IMAGE_TAG__#${IMAGE_TAG}#g" \
               k8s/frontend.yaml | kubectl apply -f -
 
+            echo "Applying ingress..."
             kubectl apply -f k8s/ingress.yaml
 
             DEPLOYMENT_FAILED="no"
 
+            echo "=========================================="
             echo "Waiting for backend rollout..."
+            echo "=========================================="
 
             if ! kubectl rollout status \
               deployment/holderforge-backend \
               -n "$NAMESPACE" \
               --timeout=10m; then
+
               echo "Backend rollout failed."
               DEPLOYMENT_FAILED="yes"
             else
@@ -183,12 +192,15 @@ jobs:
             fi
 
             if [ "$DEPLOYMENT_FAILED" = "no" ]; then
+              echo "=========================================="
               echo "Waiting for frontend rollout..."
+              echo "=========================================="
 
               if ! kubectl rollout status \
                 deployment/holderforge-frontend \
                 -n "$NAMESPACE" \
                 --timeout=10m; then
+
                 echo "Frontend rollout failed."
                 DEPLOYMENT_FAILED="yes"
               else
@@ -202,6 +214,8 @@ jobs:
               echo "=========================================="
 
               if [ "$BACKEND_EXISTS" = "yes" ]; then
+                echo "Rolling back existing backend deployment..."
+
                 kubectl rollout undo \
                   deployment/holderforge-backend \
                   -n "$NAMESPACE" || true
@@ -210,9 +224,18 @@ jobs:
                   deployment/holderforge-backend \
                   -n "$NAMESPACE" \
                   --timeout=10m || true
+              else
+                echo "Backend did not exist before deployment."
+                echo "Removing failed backend deployment only..."
+
+                kubectl delete deployment holderforge-backend \
+                  -n "$NAMESPACE" \
+                  --ignore-not-found=true
               fi
 
               if [ "$FRONTEND_EXISTS" = "yes" ]; then
+                echo "Rolling back existing frontend deployment..."
+
                 kubectl rollout undo \
                   deployment/holderforge-frontend \
                   -n "$NAMESPACE" || true
@@ -221,24 +244,39 @@ jobs:
                   deployment/holderforge-frontend \
                   -n "$NAMESPACE" \
                   --timeout=10m || true
+              else
+                echo "Frontend did not exist before deployment."
+                echo "Removing failed frontend deployment only..."
+
+                kubectl delete deployment holderforge-frontend \
+                  -n "$NAMESPACE" \
+                  --ignore-not-found=true
               fi
 
               exit 1
             fi
 
+            echo "=========================================="
             echo "Checking backend pods..."
+            echo "=========================================="
+
             kubectl get pods \
               -n "$NAMESPACE" \
               -l app=holderforge-backend \
               -o wide
 
+            echo "=========================================="
             echo "Checking frontend pods..."
+            echo "=========================================="
+
             kubectl get pods \
               -n "$NAMESPACE" \
               -l app=holderforge-frontend \
               -o wide
 
+            echo "=========================================="
             echo "Checking backend health internally..."
+            echo "=========================================="
 
             HEALTH_POD="holderforge-health-${IMAGE_TAG:0:8}"
 
@@ -254,12 +292,17 @@ jobs:
 
               echo "Backend health check failed."
               DEPLOYMENT_FAILED="yes"
+            else
+              echo
+              echo "Backend internal health check successful."
             fi
 
             echo
 
             if [ "$DEPLOYMENT_FAILED" = "no" ]; then
+              echo "=========================================="
               echo "Checking frontend health internally..."
+              echo "=========================================="
 
               FRONTEND_HEALTH_POD="holderforge-frontend-health-${IMAGE_TAG:0:8}"
 
@@ -275,13 +318,19 @@ jobs:
 
                 echo "Frontend health check failed."
                 DEPLOYMENT_FAILED="yes"
+              else
+                echo "Frontend internal health check successful."
               fi
             fi
 
             if [ "$DEPLOYMENT_FAILED" = "yes" ]; then
-              echo "Health check failure - rolling back."
+              echo "=========================================="
+              echo "HEALTH CHECK FAILED - ROLLBACK"
+              echo "=========================================="
 
               if [ "$BACKEND_EXISTS" = "yes" ]; then
+                echo "Rolling back existing backend deployment..."
+
                 kubectl rollout undo \
                   deployment/holderforge-backend \
                   -n "$NAMESPACE" || true
@@ -290,9 +339,18 @@ jobs:
                   deployment/holderforge-backend \
                   -n "$NAMESPACE" \
                   --timeout=10m || true
+              else
+                echo "Backend did not exist before deployment."
+                echo "Removing failed backend deployment only..."
+
+                kubectl delete deployment holderforge-backend \
+                  -n "$NAMESPACE" \
+                  --ignore-not-found=true
               fi
 
               if [ "$FRONTEND_EXISTS" = "yes" ]; then
+                echo "Rolling back existing frontend deployment..."
+
                 kubectl rollout undo \
                   deployment/holderforge-frontend \
                   -n "$NAMESPACE" || true
@@ -301,32 +359,46 @@ jobs:
                   deployment/holderforge-frontend \
                   -n "$NAMESPACE" \
                   --timeout=10m || true
+              else
+                echo "Frontend did not exist before deployment."
+                echo "Removing failed frontend deployment only..."
+
+                kubectl delete deployment holderforge-frontend \
+                  -n "$NAMESPACE" \
+                  --ignore-not-found=true
               fi
 
               exit 1
             fi
 
+            echo "=========================================="
             echo "Checking external ingress..."
+            echo "=========================================="
 
             INGRESS_OK="no"
 
-            for i in $(seq 1 12); do
+            for i in $(seq 1 60); do
               if curl -fsS https://holderforge.io/ >/dev/null && \
                  curl -fsS https://www.holderforge.io/ >/dev/null && \
-                 curl -fsS https://holderforge.io/api/health >/dev/null; then
+                 curl -fsS https://holderforge.io/health >/dev/null; then
+
                 INGRESS_OK="yes"
                 echo "Ingress is healthy."
                 break
               fi
 
-              echo "Waiting for ingress... attempt ${i}/12"
+              echo "Waiting for ingress... attempt ${i}/60"
               sleep 5
             done
 
             if [ "$INGRESS_OK" != "yes" ]; then
-              echo "Ingress health check failed."
+              echo "=========================================="
+              echo "INGRESS HEALTH CHECK FAILED - ROLLBACK"
+              echo "=========================================="
 
               if [ "$BACKEND_EXISTS" = "yes" ]; then
+                echo "Rolling back existing backend deployment..."
+
                 kubectl rollout undo \
                   deployment/holderforge-backend \
                   -n "$NAMESPACE" || true
@@ -335,9 +407,18 @@ jobs:
                   deployment/holderforge-backend \
                   -n "$NAMESPACE" \
                   --timeout=10m || true
+              else
+                echo "Backend did not exist before deployment."
+                echo "Removing failed backend deployment only..."
+
+                kubectl delete deployment holderforge-backend \
+                  -n "$NAMESPACE" \
+                  --ignore-not-found=true
               fi
 
               if [ "$FRONTEND_EXISTS" = "yes" ]; then
+                echo "Rolling back existing frontend deployment..."
+
                 kubectl rollout undo \
                   deployment/holderforge-frontend \
                   -n "$NAMESPACE" || true
@@ -346,6 +427,13 @@ jobs:
                   deployment/holderforge-frontend \
                   -n "$NAMESPACE" \
                   --timeout=10m || true
+              else
+                echo "Frontend did not exist before deployment."
+                echo "Removing failed frontend deployment only..."
+
+                kubectl delete deployment holderforge-frontend \
+                  -n "$NAMESPACE" \
+                  --ignore-not-found=true
               fi
 
               exit 1
