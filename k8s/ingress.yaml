@@ -9,6 +9,7 @@ metadata:
     nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
     nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
     nginx.ingress.kubernetes.io/proxy-connect-timeout: "60"
+
 spec:
   ingressClassName: nginx
 
@@ -22,6 +23,14 @@ spec:
     - host: holderforge.io
       http:
         paths:
+          - path: /health
+            pathType: Exact
+            backend:
+              service:
+                name: holderforge-backend
+                port:
+                  number: 4002
+
           - path: /api
             pathType: Prefix
             backend:
@@ -41,6 +50,14 @@ spec:
     - host: www.holderforge.io
       http:
         paths:
+          - path: /health
+            pathType: Exact
+            backend:
+              service:
+                name: holderforge-backend
+                port:
+                  number: 4002
+
           - path: /api
             pathType: Prefix
             backend:

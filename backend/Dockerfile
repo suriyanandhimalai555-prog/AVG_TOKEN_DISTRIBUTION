@@ -1,19 +1,26 @@
-# Build Stage
-FROM node:22-alpine AS build
+# Dependencies
+FROM node:22-alpine AS deps
 
 WORKDIR /app
 
 COPY package*.json ./
 
-RUN npm ci
+RUN --mount=type=cache,target=/root/.npm \
+    npm ci
+
+
+# Build
+FROM deps AS build
+
+WORKDIR /app
 
 COPY . .
 
 RUN npm run build
 
 
-# Production Stage
-FROM node:22-alpine
+# Production
+FROM node:22-alpine AS production
 
 WORKDIR /app
 
@@ -22,8 +29,7 @@ ENV PORT=4002
 
 COPY package*.json ./
 
-# Runtime scripts use ts-node, so keep the complete dependency tree.
-RUN npm ci
+COPY --from=deps /app/node_modules ./node_modules
 
 COPY --from=build /app/dist ./dist
 COPY --from=build /app/scripts ./scripts
@@ -33,7 +39,6 @@ COPY --from=build /app/tsconfig.json ./tsconfig.json
 COPY --from=build /app/tsconfig.build.json ./tsconfig.build.json
 COPY --from=build /app/remappings.txt ./remappings.txt
 
-# Runtime-generated files
 RUN mkdir -p /app/output /app/cache
 
 EXPOSE 4002
