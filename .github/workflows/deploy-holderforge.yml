@@ -183,7 +183,7 @@ jobs:
             if ! kubectl rollout status \
               deployment/holderforge-backend \
               -n "$NAMESPACE" \
-              --timeout=10m; then
+              --timeout=2m; then
 
               echo "Backend rollout failed."
               DEPLOYMENT_FAILED="yes"
@@ -199,7 +199,7 @@ jobs:
               if ! kubectl rollout status \
                 deployment/holderforge-frontend \
                 -n "$NAMESPACE" \
-                --timeout=10m; then
+                --timeout=2m; then
 
                 echo "Frontend rollout failed."
                 DEPLOYMENT_FAILED="yes"
@@ -223,7 +223,7 @@ jobs:
                 kubectl rollout status \
                   deployment/holderforge-backend \
                   -n "$NAMESPACE" \
-                  --timeout=10m || true
+                  --timeout=2m || true
               else
                 echo "Backend did not exist before deployment."
                 echo "Removing failed backend deployment only..."
@@ -243,7 +243,7 @@ jobs:
                 kubectl rollout status \
                   deployment/holderforge-frontend \
                   -n "$NAMESPACE" \
-                  --timeout=10m || true
+                  --timeout=2m || true
               else
                 echo "Frontend did not exist before deployment."
                 echo "Removing failed frontend deployment only..."
@@ -338,7 +338,7 @@ jobs:
                 kubectl rollout status \
                   deployment/holderforge-backend \
                   -n "$NAMESPACE" \
-                  --timeout=10m || true
+                  --timeout=2m || true
               else
                 echo "Backend did not exist before deployment."
                 echo "Removing failed backend deployment only..."
@@ -358,7 +358,7 @@ jobs:
                 kubectl rollout status \
                   deployment/holderforge-frontend \
                   -n "$NAMESPACE" \
-                  --timeout=10m || true
+                  --timeout=2m || true
               else
                 echo "Frontend did not exist before deployment."
                 echo "Removing failed frontend deployment only..."
@@ -377,7 +377,7 @@ jobs:
 
             INGRESS_OK="no"
 
-            for i in $(seq 1 60); do
+            for i in $(seq 1 24); do
               if curl -fsS https://holderforge.io/ >/dev/null && \
                  curl -fsS https://www.holderforge.io/ >/dev/null && \
                  curl -fsS https://holderforge.io/health >/dev/null; then
@@ -387,7 +387,7 @@ jobs:
                 break
               fi
 
-              echo "Waiting for ingress... attempt ${i}/60"
+              echo "Waiting for ingress... attempt ${i}/24"
               sleep 5
             done
 
@@ -406,7 +406,7 @@ jobs:
                 kubectl rollout status \
                   deployment/holderforge-backend \
                   -n "$NAMESPACE" \
-                  --timeout=10m || true
+                  --timeout=2m || true
               else
                 echo "Backend did not exist before deployment."
                 echo "Removing failed backend deployment only..."
@@ -426,7 +426,7 @@ jobs:
                 kubectl rollout status \
                   deployment/holderforge-frontend \
                   -n "$NAMESPACE" \
-                  --timeout=10m || true
+                  --timeout=2m || true
               else
                 echo "Frontend did not exist before deployment."
                 echo "Removing failed frontend deployment only..."
