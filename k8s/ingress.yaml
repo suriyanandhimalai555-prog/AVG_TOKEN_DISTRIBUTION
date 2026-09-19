@@ -1,0 +1,58 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: holderforge-ingress
+  namespace: holderforge
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    nginx.ingress.kubernetes.io/proxy-http-version: "1.1"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-connect-timeout: "60"
+spec:
+  ingressClassName: nginx
+
+  tls:
+    - hosts:
+        - holderforge.io
+        - www.holderforge.io
+      secretName: holderforge-tls
+
+  rules:
+    - host: holderforge.io
+      http:
+        paths:
+          - path: /api
+            pathType: Prefix
+            backend:
+              service:
+                name: holderforge-backend
+                port:
+                  number: 4002
+
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: holderforge-frontend
+                port:
+                  number: 80
+
+    - host: www.holderforge.io
+      http:
+        paths:
+          - path: /api
+            pathType: Prefix
+            backend:
+              service:
+                name: holderforge-backend
+                port:
+                  number: 4002
+
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: holderforge-frontend
+                port:
+                  number: 80

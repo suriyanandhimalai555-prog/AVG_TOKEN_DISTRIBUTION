@@ -1,0 +1,82 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: holderforge-frontend
+  namespace: holderforge
+spec:
+  replicas: 2
+
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+
+  minReadySeconds: 10
+  progressDeadlineSeconds: 600
+  revisionHistoryLimit: 5
+
+  selector:
+    matchLabels:
+      app: holderforge-frontend
+
+  template:
+    metadata:
+      labels:
+        app: holderforge-frontend
+
+    spec:
+      imagePullSecrets:
+        - name: holderforge-ghcr
+
+      containers:
+        - name: frontend
+          image: ghcr.io/suriyanandhimalai555-prog/avg-token-frontend:__IMAGE_TAG__
+          imagePullPolicy: IfNotPresent
+
+          ports:
+            - name: http
+              containerPort: 80
+              protocol: TCP
+
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+
+          livenessProbe:
+            httpGet:
+              path: /
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 300m
+              memory: 256Mi
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: holderforge-frontend
+  namespace: holderforge
+spec:
+  type: ClusterIP
+
+  selector:
+    app: holderforge-frontend
+
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+      protocol: TCP

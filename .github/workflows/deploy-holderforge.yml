@@ -1,0 +1,359 @@
+name: Deploy AVG Token Distribution
+
+on:
+  push:
+    branches:
+      - main
+
+concurrency:
+  group: holderforge-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_OWNER: suriyanandhimalai555-prog
+  BACKEND_IMAGE: ghcr.io/suriyanandhimalai555-prog/avg-token-backend
+  FRONTEND_IMAGE: ghcr.io/suriyanandhimalai555-prog/avg-token-frontend
+  NAMESPACE: holderforge
+
+jobs:
+  build-and-push:
+    name: Build and Push ARM64 Images
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push backend
+        uses: docker/build-push-action@v6
+        with:
+          context: ./backend
+          file: ./backend/Dockerfile
+          platforms: linux/arm64
+          push: true
+          tags: |
+            ${{ env.BACKEND_IMAGE }}:${{ github.sha }}
+          cache-from: type=gha,scope=holderforge-backend
+          cache-to: type=gha,mode=max,scope=holderforge-backend
+
+      - name: Build and push frontend
+        uses: docker/build-push-action@v6
+        with:
+          context: ./frontend
+          file: ./frontend/Dockerfile
+          platforms: linux/arm64
+          push: true
+          build-args: |
+            VITE_API_URL=https://holderforge.io
+          tags: |
+            ${{ env.FRONTEND_IMAGE }}:${{ github.sha }}
+          cache-from: type=gha,scope=holderforge-frontend
+          cache-to: type=gha,mode=max,scope=holderforge-frontend
+
+  deploy:
+    name: Deploy to k3s
+    needs: build-and-push
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Deploy to k3s
+        uses: appleboy/ssh-action@v1.2.2
+        env:
+          IMAGE_TAG: ${{ github.sha }}
+          GHCR_USERNAME: ${{ secrets.GHCR_USERNAME }}
+          GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
+        with:
+          host: ${{ secrets.HOST }}
+          username: ${{ secrets.USERNAME }}
+          key: ${{ secrets.SSH_KEY }}
+          port: ${{ secrets.PORT }}
+          envs: IMAGE_TAG,GHCR_USERNAME,GHCR_TOKEN
+          script_stop: true
+
+          script: |
+            set -euo pipefail
+
+            APP_DIR="$HOME/otp/apps/AVG_TOKEN_DISTRIBUTION/combined-repo"
+            NAMESPACE="holderforge"
+
+            cd "$APP_DIR"
+
+            echo "=========================================="
+            echo "AVG Token Distribution deployment"
+            echo "Commit: ${IMAGE_TAG}"
+            echo "Namespace: ${NAMESPACE}"
+            echo "=========================================="
+
+            echo "Checking cluster..."
+            kubectl cluster-info >/dev/null
+
+            echo "Ensuring namespace exists..."
+            kubectl apply -f k8s/namespace.yaml
+
+            echo "Updating GHCR pull secret..."
+            kubectl create secret docker-registry holderforge-ghcr \
+              --namespace "$NAMESPACE" \
+              --docker-server=ghcr.io \
+              --docker-username="$GHCR_USERNAME" \
+              --docker-password="$GHCR_TOKEN" \
+              --dry-run=client \
+              -o yaml | kubectl apply -f -
+
+            echo "Applying backend output PVC..."
+            kubectl apply -f k8s/backend-storage.yaml
+
+            BACKEND_EXISTS="no"
+            FRONTEND_EXISTS="no"
+
+            if kubectl get deployment holderforge-backend -n "$NAMESPACE" >/dev/null 2>&1; then
+              BACKEND_EXISTS="yes"
+            fi
+
+            if kubectl get deployment holderforge-frontend -n "$NAMESPACE" >/dev/null 2>&1; then
+              FRONTEND_EXISTS="yes"
+            fi
+
+            echo "Existing backend deployment: ${BACKEND_EXISTS}"
+            echo "Existing frontend deployment: ${FRONTEND_EXISTS}"
+
+            echo "Applying backend deployment..."
+            sed "s#__IMAGE_TAG__#${IMAGE_TAG}#g" \
+              k8s/backend.yaml | kubectl apply -f -
+
+            echo "Applying frontend deployment..."
+            sed "s#__IMAGE_TAG__#${IMAGE_TAG}#g" \
+              k8s/frontend.yaml | kubectl apply -f -
+
+            echo "Applying ingress..."
+            kubectl apply -f k8s/ingress.yaml
+
+            DEPLOYMENT_FAILED="no"
+
+            echo "Waiting for backend rollout..."
+            if ! kubectl rollout status \
+              deployment/holderforge-backend \
+              -n "$NAMESPACE" \
+              --timeout=10m; then
+
+              echo "Backend rollout failed."
+              DEPLOYMENT_FAILED="yes"
+
+            else
+              echo "Backend rollout successful."
+            fi
+
+            if [ "$DEPLOYMENT_FAILED" = "no" ]; then
+              echo "Waiting for frontend rollout..."
+
+              if ! kubectl rollout status \
+                deployment/holderforge-frontend \
+                -n "$NAMESPACE" \
+                --timeout=10m; then
+
+                echo "Frontend rollout failed."
+                DEPLOYMENT_FAILED="yes"
+
+              else
+                echo "Frontend rollout successful."
+              fi
+            fi
+
+            if [ "$DEPLOYMENT_FAILED" = "yes" ]; then
+
+              echo "=========================================="
+              echo "DEPLOYMENT FAILED"
+              echo "Starting rollback..."
+              echo "=========================================="
+
+              if [ "$BACKEND_EXISTS" = "yes" ]; then
+                echo "Rolling backend back..."
+                kubectl rollout undo \
+                  deployment/holderforge-backend \
+                  -n "$NAMESPACE" || true
+
+                kubectl rollout status \
+                  deployment/holderforge-backend \
+                  -n "$NAMESPACE" \
+                  --timeout=10m || true
+              fi
+
+              if [ "$FRONTEND_EXISTS" = "yes" ]; then
+                echo "Rolling frontend back..."
+                kubectl rollout undo \
+                  deployment/holderforge-frontend \
+                  -n "$NAMESPACE" || true
+
+                kubectl rollout status \
+                  deployment/holderforge-frontend \
+                  -n "$NAMESPACE" \
+                  --timeout=10m || true
+              fi
+
+              echo "Rollback completed."
+              exit 1
+            fi
+
+            echo "Checking backend service..."
+            kubectl get pods \
+              -n "$NAMESPACE" \
+              -l app=holderforge-backend \
+              -o wide
+
+            echo "Checking frontend service..."
+            kubectl get pods \
+              -n "$NAMESPACE" \
+              -l app=holderforge-frontend \
+              -o wide
+
+            echo "Checking backend health internally..."
+            HEALTH_POD="holderforge-health-${IMAGE_TAG:0:8}"
+
+            kubectl run "$HEALTH_POD" \
+              -n "$NAMESPACE" \
+              --image=curlimages/curl:8.10.1 \
+              --restart=Never \
+              --rm \
+              -i \
+              --command -- \
+              curl -fsS \
+              http://holderforge-backend:4002/health
+
+            echo
+
+            echo "Checking frontend internally..."
+            FRONTEND_HEALTH_POD="holderforge-frontend-health-${IMAGE_TAG:0:8}"
+
+            kubectl run "$FRONTEND_HEALTH_POD" \
+              -n "$NAMESPACE" \
+              --image=curlimages/curl:8.10.1 \
+              --restart=Never \
+              --rm \
+              -i \
+              --command -- \
+              curl -fsSI \
+              http://holderforge-frontend/
+
+            echo
+
+            echo "Checking ingress..."
+
+            for i in $(seq 1 30); do
+              if curl -fsS https://holderforge.io/ >/dev/null && \
+                 curl -fsS https://www.holderforge.io/ >/dev/null; then
+                echo "Ingress is healthy."
+                break
+              fi
+
+              if [ "$i" -eq 30 ]; then
+                echo "Ingress health check failed."
+
+                if [ "$BACKEND_EXISTS" = "yes" ]; then
+                  echo "Rolling backend back..."
+                  kubectl rollout undo \
+                    deployment/holderforge-backend \
+                    -n "$NAMESPACE" || true
+
+                  kubectl rollout status \
+                    deployment/holderforge-backend \
+                    -n "$NAMESPACE" \
+                    --timeout=10m || true
+                fi
+
+                if [ "$FRONTEND_EXISTS" = "yes" ]; then
+                  echo "Rolling frontend back..."
+                  kubectl rollout undo \
+                    deployment/holderforge-frontend \
+                    -n "$NAMESPACE" || true
+
+                  kubectl rollout status \
+                    deployment/holderforge-frontend \
+                    -n "$NAMESPACE" \
+                    --timeout=10m || true
+                fi
+
+                exit 1
+              fi
+
+              echo "Waiting for ingress... attempt ${i}/30"
+              sleep 10
+            done
+
+            echo "=========================================="
+            echo "DEPLOYMENT SUCCESSFUL"
+            echo "Commit: ${IMAGE_TAG}"
+            echo "=========================================="
+
+  notify-success:
+    name: Send Success Notification
+    needs:
+      - build-and-push
+      - deploy
+    if: ${{ success() }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Send success email
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: smtp.hostinger.com
+          server_port: 587
+          username: ${{ secrets.SMTP_USERNAME }}
+          password: ${{ secrets.SMTP_PASSWORD }}
+          subject: AVG Token Distribution Deployment SUCCESS
+          to: devops@avgprimetech.com,chandrashekhargawda2000@gmail.com
+          from: devops@avgprimetech.com
+          secure: false
+          body: |
+            Repository: ${{ github.repository }}
+            Branch: ${{ github.ref_name }}
+            Commit: ${{ github.sha }}
+            Triggered by: ${{ github.actor }}
+            Status: SUCCESS
+
+  notify-failure:
+    name: Send Failure Notification
+    needs:
+      - build-and-push
+      - deploy
+    if: ${{ failure() }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Send failure email
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: smtp.hostinger.com
+          server_port: 587
+          username: ${{ secrets.SMTP_USERNAME }}
+          password: ${{ secrets.SMTP_PASSWORD }}
+          subject: AVG Token Distribution Deployment FAILED
+          to: devops@avgprimetech.com,chandrashekhargawda2000@gmail.com
+          from: devops@avgprimetech.com
+          secure: false
+          body: |
+            Repository: ${{ github.repository }}
+            Branch: ${{ github.ref_name }}
+            Commit: ${{ github.sha }}
+            Triggered by: ${{ github.actor }}
+            Status: FAILED
