@@ -24,8 +24,8 @@ router.get("/", requireAuth, requirePlan, async (req: Request, res: Response) =>
     if (!owns) return res.status(404).json({ error: "Session not found" });
 
     const [batches, total] = await Promise.all([
-      Batch.find({ sessionId }).sort({ batchIndex: -1 }).skip(skip).limit(limit).lean(),
-      Batch.countDocuments({ sessionId }),
+      Batch.findBySession(sessionId, { skip, limit }),
+      Batch.count(sessionId),
     ]);
 
     return res.json({ batches, total });
@@ -48,9 +48,9 @@ router.get("/wallets", requireAuth, requirePlan, async (req: Request, res: Respo
     if (!owns) return res.status(404).json({ error: "Session not found" });
 
     const [wallets, total, session] = await Promise.all([
-      Wallet.find({ sessionId }).sort({ index: 1 }).skip(skip).limit(limit).lean(),
-      Wallet.countDocuments({ sessionId }),
-      Session.findById(sessionId).lean(),
+      Wallet.findBySession(sessionId, { skip, limit }),
+      Wallet.count(sessionId),
+      Session.findById(sessionId),
     ]);
 
     // Fallback sync from distribution-plan.json for older/stale sessions where
@@ -122,21 +122,9 @@ router.get("/wallets/summary", requireAuth, requirePlan, async (req: Request, re
     const owns = await assertSessionOwned(sessionId, req.user!._id);
     if (!owns) return res.status(404).json({ error: "Session not found" });
 
-    const [stats] = await Wallet.aggregate([
-      { $match: { sessionId } },
-      {
-        $group: {
-          _id: null,
-          totalWallets: { $sum: 1 },
-          totalTokens: { $sum: "$amount" },
-        },
-      },
-    ]);
+    const stats = await Wallet.summary(sessionId);
 
-    return res.json({
-      totalWallets: Number(stats?.totalWallets ?? 0),
-      totalTokens: Number(stats?.totalTokens ?? 0),
-    });
+    return res.json(stats);
   } catch (err) {
     console.error("[batches/wallets/summary GET]", err);
     return res.status(500).json({ error: "Failed to get wallets summary" });

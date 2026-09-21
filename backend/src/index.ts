@@ -2,9 +2,9 @@ import "dotenv/config";
 import express from "express";
 import cors from "cors";
 import session from "express-session";
-import MongoStore from "connect-mongo";
+import connectPgSimple from "connect-pg-simple";
 import passport from "./config/passport";
-import { connectDB } from "./lib/db";
+import { postgresPool } from "./lib/postgres";
 
 import sessionsRouter from "./routes/sessions";
 import generateRouter from "./routes/generate";
@@ -92,13 +92,6 @@ const sessionSecret =
 
 const isProd = process.env.NODE_ENV === "production";
 
-const mongoUrl = process.env.MONGODB_URI;
-
-// Default OFF for stability.
-// Enable explicitly with USE_MONGO_SESSION_STORE=true.
-const useMongoSessionStore =
-  process.env.USE_MONGO_SESSION_STORE === "true";
-
 class EphemeralSessionStore extends session.Store {
   private sessions = new Map<
     string,
@@ -173,34 +166,31 @@ class EphemeralSessionStore extends session.Store {
 }
 
 function buildSessionStore(): session.Store | undefined {
-  if (!mongoUrl || !useMongoSessionStore) {
-    if (!mongoUrl) {
-      console.warn(
-        "[session] MONGODB_URI missing — using EphemeralSessionStore"
-      );
-    }
-
-    if (!useMongoSessionStore) {
-      console.warn(
-        "[session] USE_MONGO_SESSION_STORE=false — using EphemeralSessionStore"
-      );
-    }
+  if (!postgresPool) {
+    console.warn(
+      "[session] DATABASE_URL missing — using EphemeralSessionStore"
+    );
 
     return new EphemeralSessionStore();
   }
 
   try {
-    const store = MongoStore.create({
-      mongoUrl,
+    const PgStore = connectPgSimple(session);
+
+    const store = new PgStore({
+      pool: postgresPool,
+      tableName: "express_sessions",
+      createTableIfMissing: false,
       ttl: 7 * 24 * 60 * 60,
+      // Keep the default errorLog so store errors are logged, not thrown.
     });
 
-    // Prevent process crash when Mongo session store emits connection errors.
+    // Prevent process crash when the session store emits connection errors.
     store.on("error", (err) => {
       const msg = err instanceof Error ? err.message : String(err);
 
       console.error(
-        `[session] MongoStore error: ${msg} (continuing with degraded sessions)`
+        `[session] PgStore error: ${msg} (continuing with degraded sessions)`
       );
     });
 
@@ -209,7 +199,7 @@ function buildSessionStore(): session.Store | undefined {
     const msg = err instanceof Error ? err.message : String(err);
 
     console.error(
-      `[session] Failed to initialize MongoStore: ${msg} (using MemoryStore)`
+      `[session] Failed to initialize PgStore: ${msg} (using MemoryStore)`
     );
 
     return undefined;
@@ -296,12 +286,17 @@ async function start(): Promise<void> {
     );
   });
 
-  connectDB().catch((err: Error) => {
-    console.error(
-      "[DB] Initial connect error:",
-      err.message
-    );
-  });
+  if (postgresPool) {
+    postgresPool
+      .query("SELECT 1")
+      .then(() => console.log("[PostgreSQL] connected"))
+      .catch((err: Error) => {
+        console.error(
+          "[PostgreSQL] Initial connect error:",
+          err.message
+        );
+      });
+  }
 
   // Kubernetes sends SIGTERM when replacing an old pod.
   // Stop accepting new HTTP connections and allow existing

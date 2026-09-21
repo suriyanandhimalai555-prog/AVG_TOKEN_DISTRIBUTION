@@ -36,8 +36,8 @@ router.post("/", requireAuth, requirePlan, async (req: Request, res: Response) =
       return res.status(409).json({ error: "Generation already running for this session" });
     }
 
-    await Session.findByIdAndUpdate(sessionId, { status: "generating", startedAt: new Date() });
-    await Wallet.deleteMany({ sessionId });
+    await Session.update(sessionId, { status: "generating", startedAt: new Date() });
+    await Wallet.deleteBySession(sessionId);
     await recordSessionAudit({
       userId: req.user!._id,
       sessionId,
@@ -56,11 +56,11 @@ router.post("/", requireAuth, requirePlan, async (req: Request, res: Response) =
         walletMode: resolvedWalletMode,
       },
       async (count) => {
-        await Session.findByIdAndUpdate(sessionId, { sentCount: count });
+        await Session.update(sessionId, { sentCount: count });
       },
       async (mnemonic) => {
         // Store mnemonic and import wallets from the CSV the script wrote
-        await Session.findByIdAndUpdate(sessionId, {
+        await Session.update(sessionId, {
           status: "idle",
           masterMnemonic: mnemonic,
         });
@@ -84,13 +84,10 @@ router.post("/", requireAuth, requirePlan, async (req: Request, res: Response) =
             };
           }).filter((d) => d.address);
 
-          const chunkSize = 1000;
-          for (let i = 0; i < docs.length; i += chunkSize) {
-            await Wallet.insertMany(docs.slice(i, i + chunkSize), { ordered: false });
-          }
+          await Wallet.insertMany(docs);
         }
 
-        await Session.findByIdAndUpdate(sessionId, { status: "idle" });
+        await Session.update(sessionId, { status: "idle" });
         await recordSessionAudit({
           userId: req.user!._id,
           sessionId,
@@ -101,7 +98,7 @@ router.post("/", requireAuth, requirePlan, async (req: Request, res: Response) =
       },
       async (err) => {
         console.error("[generate] error:", err);
-        await Session.findByIdAndUpdate(sessionId, { status: "error" });
+        await Session.update(sessionId, { status: "error" });
         await recordSessionAudit({
           userId: req.user!._id,
           sessionId,

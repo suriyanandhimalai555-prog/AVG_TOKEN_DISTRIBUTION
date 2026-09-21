@@ -17,13 +17,10 @@ async function syncWalletStatusFromPlan(
 ): Promise<{ sentCount: number; failedCount: number }> {
   const planPath = path.join(getScriptsDir(), "output", "distribution-plan.json");
   if (!fs.existsSync(planPath)) {
-    await Wallet.updateMany(
-      { sessionId, sent: { $ne: true } },
-      { $set: { failed: true, failureReason: fallbackFailureReason } }
-    );
+    await Wallet.markUnsentFailed(sessionId, fallbackFailureReason);
     const [sentCount, failedCount] = await Promise.all([
-      Wallet.countDocuments({ sessionId, sent: true }),
-      Wallet.countDocuments({ sessionId, sent: { $ne: true } }),
+      Wallet.count(sessionId, { sent: true }),
+      Wallet.count(sessionId, { sent: false }),
     ]);
     return { sentCount, failedCount };
   }
@@ -37,35 +34,21 @@ async function syncWalletStatusFromPlan(
 
   const sentEntries = plan.filter((e) => e.sent);
   if (sentEntries.length > 0) {
-    const ops = sentEntries.map((e) => ({
-      updateOne: {
-        filter: { sessionId, index: e.index },
-        update: {
-          $set: {
-            sent: true,
-            failed: false,
-            failureReason: undefined,
-            txHash: e.txHash ?? undefined,
-            timestamp: e.timestamp ? new Date(e.timestamp) : new Date(),
-          },
-        },
-      },
-    }));
-
-    const chunkSize = 500;
-    for (let i = 0; i < ops.length; i += chunkSize) {
-      await Wallet.bulkWrite(ops.slice(i, i + chunkSize));
-    }
+    await Wallet.markSent(
+      sessionId,
+      sentEntries.map((e) => ({
+        index: e.index,
+        txHash: e.txHash ?? null,
+        timestamp: e.timestamp ? new Date(e.timestamp) : new Date(),
+      }))
+    );
   }
 
-  await Wallet.updateMany(
-    { sessionId, sent: { $ne: true } },
-    { $set: { failed: true, failureReason: fallbackFailureReason } }
-  );
+  await Wallet.markUnsentFailed(sessionId, fallbackFailureReason);
 
   const [sentCount, failedCount] = await Promise.all([
-    Wallet.countDocuments({ sessionId, sent: true }),
-    Wallet.countDocuments({ sessionId, sent: { $ne: true } }),
+    Wallet.count(sessionId, { sent: true }),
+    Wallet.count(sessionId, { sent: false }),
   ]);
   return { sentCount, failedCount };
 }
@@ -92,7 +75,7 @@ router.post("/", requireAuth, requirePlan, async (req: Request, res: Response) =
       return res.status(409).json({ error: "Distribution already running for this session" });
     }
 
-    await Session.findByIdAndUpdate(sessionId, {
+    await Session.update(sessionId, {
       status: "distributing",
       startedAt: new Date(),
     });
@@ -132,24 +115,16 @@ router.post("/", requireAuth, requirePlan, async (req: Request, res: Response) =
         delayMode: delayMode === true,
       },
       async (batchIndex, _totalBatches, walletCount, txHash, gasUsed) => {
-        await Batch.findOneAndUpdate(
-          { sessionId, batchIndex },
-          {
-            $set: {
-              sessionId,
-              batchIndex,
-              walletCount,
-              txHash,
-              gasUsed,
-              status: "confirmed",
-              confirmedAt: new Date(),
-            },
-          },
-          { upsert: true, new: true }
-        );
+        await Batch.upsertConfirmed({
+          sessionId,
+          batchIndex,
+          walletCount,
+          txHash,
+          gasUsed,
+        });
       },
       async (sentCount, failedCount) => {
-        await Session.findByIdAndUpdate(sessionId, { sentCount, failedCount });
+        await Session.update(sessionId, { sentCount, failedCount });
       },
       async (bnbSpent) => {
         try {
@@ -157,7 +132,7 @@ router.post("/", requireAuth, requirePlan, async (req: Request, res: Response) =
             sessionId,
             "Failed to send (insufficient gas/BNB or batch failure)"
           );
-          await Session.findByIdAndUpdate(sessionId, {
+          await Session.update(sessionId, {
             status: "done",
             completedAt: new Date(),
             bnbSpent,
@@ -186,7 +161,7 @@ router.post("/", requireAuth, requirePlan, async (req: Request, res: Response) =
             sessionId,
             `Failed to send (${String(err || "distribution error")})`
           );
-          await Session.findByIdAndUpdate(sessionId, {
+          await Session.update(sessionId, {
             status: "error",
             completedAt: new Date(),
             sentCount: counts.sentCount,
@@ -205,7 +180,7 @@ router.post("/", requireAuth, requirePlan, async (req: Request, res: Response) =
           });
         } catch (syncErr) {
           console.error("[distribute] error-sync failed:", syncErr);
-          await Session.findByIdAndUpdate(sessionId, { status: "error" });
+          await Session.update(sessionId, { status: "error" });
         }
       }
     );
@@ -223,14 +198,14 @@ router.delete("/", requireAuth, requirePlan, async (req: Request, res: Response)
     const { sessionId } = req.body as { sessionId: string };
     if (!sessionId) return res.status(400).json({ error: "sessionId is required" });
 
-    const sess = await Session.findById(sessionId).lean();
+    const sess = await Session.findById(sessionId);
     if (!sess || !sess.userId || sess.userId.toString() !== req.user!._id.toString()) {
       return res.status(404).json({ error: "Session not found" });
     }
 
     const killed = killProcess(sessionId);
     const counts = await syncWalletStatusFromPlan(sessionId, "Stopped by user");
-    await Session.findByIdAndUpdate(sessionId, {
+    await Session.update(sessionId, {
       status: "stopped",
       completedAt: new Date(),
       sentCount: counts.sentCount,

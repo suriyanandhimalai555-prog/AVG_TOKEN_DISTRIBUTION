@@ -64,7 +64,7 @@ router.post("/", async (req: Request, res: Response) => {
 
     await recordSessionAudit({
       userId: req.user!._id,
-      sessionId: session._id.toString(),
+      sessionId: session._id,
       action: "SESSION_CREATED",
       message: "Session created from setup",
       details: {
@@ -76,7 +76,7 @@ router.post("/", async (req: Request, res: Response) => {
       },
     });
 
-    return res.status(201).json({ sessionId: session._id.toString(), session });
+    return res.status(201).json({ sessionId: session._id, session });
   } catch (err) {
     console.error("[sessions POST]", err);
     return res.status(500).json({ error: "Failed to create session" });
@@ -86,7 +86,7 @@ router.post("/", async (req: Request, res: Response) => {
 // GET /api/sessions — list all sessions (most recent first)
 router.get("/", async (req: Request, res: Response) => {
   try {
-    const sessions = await Session.find({ userId: req.user!._id }).sort({ createdAt: -1 }).limit(50).lean();
+    const sessions = await Session.findByUser(req.user!._id, 50);
     return res.json({ sessions });
   } catch (err) {
     console.error("[sessions GET]", err);
@@ -109,7 +109,7 @@ router.get("/history", async (req: Request, res: Response) => {
 // GET /api/sessions/:id — single session with batch + wallet counts
 router.get("/:id", async (req: Request, res: Response) => {
   try {
-    const session = await Session.findById(req.params.id).lean();
+    const session = await Session.findById(req.params.id);
     if (!session) return res.status(404).json({ error: "Session not found" });
 
     if (!session.userId || session.userId.toString() !== req.user!._id.toString()) {
@@ -117,8 +117,8 @@ router.get("/:id", async (req: Request, res: Response) => {
     }
 
     const [batchCount, walletCount] = await Promise.all([
-      Batch.countDocuments({ sessionId: req.params.id }),
-      Wallet.countDocuments({ sessionId: req.params.id }),
+      Batch.count(req.params.id),
+      Wallet.count(req.params.id),
     ]);
 
     return res.json({ session, batchCount, walletCount });
@@ -131,7 +131,7 @@ router.get("/:id", async (req: Request, res: Response) => {
 // PATCH /api/sessions/:id — partial update
 router.patch("/:id", async (req: Request, res: Response) => {
   try {
-    const existing = await Session.findById(req.params.id).lean();
+    const existing = await Session.findById(req.params.id);
     if (!existing || !existing.userId || existing.userId.toString() !== req.user!._id.toString()) {
       return res.status(404).json({ error: "Session not found" });
     }
@@ -175,10 +175,8 @@ router.patch("/:id", async (req: Request, res: Response) => {
     const shouldResetRunData = setupChanged || terminalRun;
 
     if (shouldResetRunData) {
-      await Promise.all([
-        Wallet.deleteMany({ sessionId: req.params.id }),
-        Batch.deleteMany({ sessionId: req.params.id }),
-      ]);
+      await Wallet.deleteBySession(req.params.id);
+      await Batch.deleteBySession(req.params.id);
       Object.assign(patch, {
         status: "idle",
         sentCount: 0,
@@ -190,7 +188,7 @@ router.patch("/:id", async (req: Request, res: Response) => {
       });
     }
 
-    const session = await Session.findByIdAndUpdate(req.params.id, patch, { new: true });
+    const session = await Session.update(req.params.id, patch);
     if (!session) return res.status(404).json({ error: "Session not found" });
 
     await recordSessionAudit({
@@ -219,7 +217,7 @@ router.patch("/:id", async (req: Request, res: Response) => {
 // DELETE /api/sessions/:id — delete one session and related data
 router.delete("/:id", async (req: Request, res: Response) => {
   try {
-    const existing = await Session.findById(req.params.id).lean();
+    const existing = await Session.findById(req.params.id);
     if (!existing || !existing.userId || existing.userId.toString() !== req.user!._id.toString()) {
       return res.status(404).json({ error: "Session not found" });
     }
@@ -228,11 +226,9 @@ router.delete("/:id", async (req: Request, res: Response) => {
       return res.status(409).json({ error: "Cannot delete while distribution is running. Stop it first." });
     }
 
-    await Promise.all([
-      Wallet.deleteMany({ sessionId: req.params.id }),
-      Batch.deleteMany({ sessionId: req.params.id }),
-      Session.deleteOne({ _id: req.params.id }),
-    ]);
+    await Wallet.deleteBySession(req.params.id);
+    await Batch.deleteBySession(req.params.id);
+    await Session.deleteById(req.params.id);
 
     await recordSessionAudit({
       userId: req.user!._id,

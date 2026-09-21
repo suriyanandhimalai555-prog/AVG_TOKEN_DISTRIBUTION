@@ -51,6 +51,8 @@ function requirePool() {
 export const Payment = {
   async findOne(query: {
     coinbaseChargeId?: string;
+    coinbaseInternalOrderId?: string;
+    userId?: string;
     id?: string;
   }): Promise<IPayment | null> {
     const pool = requirePool();
@@ -61,6 +63,16 @@ export const Payment = {
     if (query.coinbaseChargeId !== undefined) {
       values.push(query.coinbaseChargeId);
       conditions.push(`coinbase_charge_id = $${values.length}`);
+    }
+
+    if (query.coinbaseInternalOrderId !== undefined) {
+      values.push(query.coinbaseInternalOrderId);
+      conditions.push(`coinbase_internal_order_id = $${values.length}`);
+    }
+
+    if (query.userId !== undefined) {
+      values.push(query.userId);
+      conditions.push(`user_id = $${values.length}`);
     }
 
     if (query.id !== undefined) {
@@ -202,6 +214,65 @@ export const Payment = {
 
     return result.rows.map(mapPayment);
   },
+
+  /** Admin listing: like find(), with userId replaced by the user's { _id, email, name }. */
+  async findWithUsers(
+    query: { status?: string } = {},
+    options: { limit?: number; offset?: number } = {}
+  ): Promise<
+    Array<
+      Omit<IPayment, "userId"> & {
+        userId: { _id: string; email: string; name: string } | null;
+      }
+    >
+  > {
+    const pool = requirePool();
+    const values: unknown[] = [];
+    let where = "";
+
+    if (query.status !== undefined) {
+      values.push(query.status);
+      where = `WHERE p.status = $${values.length}`;
+    }
+
+    values.push(options.limit ?? 100);
+    const limitParam = `$${values.length}`;
+
+    values.push(options.offset ?? 0);
+    const offsetParam = `$${values.length}`;
+
+    const result = await pool.query(
+      `SELECT p.*, u.email AS user_email, u.name AS user_name
+       FROM payments p
+       LEFT JOIN users u ON u.id = p.user_id
+       ${where}
+       ORDER BY p.created_at DESC
+       LIMIT ${limitParam}
+       OFFSET ${offsetParam}`,
+      values
+    );
+
+    return result.rows.map((row) => ({
+      ...mapPayment(row),
+      userId:
+        row.user_email != null
+          ? { _id: row.user_id, email: row.user_email, name: row.user_name }
+          : null,
+    }));
+  },
+
+  async sumConfirmedRevenue(): Promise<number> {
+    const pool = requirePool();
+
+    const result = await pool.query(
+      `SELECT COALESCE(SUM(amount), 0) AS revenue
+       FROM payments
+       WHERE status = 'CONFIRMED'`
+    );
+
+    return Number(result.rows[0].revenue);
+  },
+
   async countDocuments(
     query: {
       userId?: string;

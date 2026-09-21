@@ -177,7 +177,7 @@ router.get("/", requireAuth, requirePlan, async (req: Request, res: Response) =>
       return res.status(400).json({ error: "file must be one of: csv, xlsx, wallets, json" });
     }
 
-    const session = await Session.findById(sessionId).lean();
+    const session = await Session.findById(sessionId);
     if (!session) return res.status(404).json({ error: "Session not found" });
 
     if (!session.userId || session.userId.toString() !== req.user!._id.toString()) {
@@ -208,10 +208,8 @@ router.get("/", requireAuth, requirePlan, async (req: Request, res: Response) =>
       return;
     }
 
-    // For csv and xlsx, fetch from MongoDB
-    const wallets = await Wallet.find({ sessionId })
-      .sort({ index: 1 })
-      .lean();
+    // For csv and xlsx, fetch from PostgreSQL
+    const wallets = await Wallet.findBySession(sessionId);
     const tokenNameResolved =
       (session.tokenName && session.tokenName.trim()) ||
       (await resolveTokenName(session.tokenAddress));

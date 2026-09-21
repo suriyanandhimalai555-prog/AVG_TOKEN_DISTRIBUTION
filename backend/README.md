@@ -36,13 +36,8 @@ In the Commerce dashboard, enable **test mode** when experimenting; follow Comme
 
 ### Set Admin User
 
-```javascript
-mongosh
-use your-database-name
-db.users.updateOne(
-  { email: "your@email.com" },
-  { $set: { role: "ADMIN" } }
-)
+```bash
+psql "$DATABASE_URL" -c "UPDATE users SET role = 'ADMIN' WHERE email = 'your@email.com';"
 ```
 Test deployment
 # Test deployment Mon Jul 20 07:31:15 CEST 2026

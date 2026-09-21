@@ -15,23 +15,18 @@ router.get("/stats", async (_req, res) => {
     const [
       totalUsers,
       activeSubscriptions,
-      agg,
+      revenueUSD,
       tokenHolderCount,
       dexCount,
       paymentsToday,
     ] = await Promise.all([
       User.countDocuments(),
       Subscription.countDocuments({ status: "ACTIVE" }),
-      Payment.aggregate([
-        { $match: { status: "CONFIRMED" } },
-        { $group: { _id: null, revenue: { $sum: "$amount" } } },
-      ]),
+      Payment.sumConfirmedRevenue(),
       Subscription.countDocuments({ status: "ACTIVE", productLine: "TOKEN_HOLDER" }),
       Subscription.countDocuments({ status: "ACTIVE", productLine: "DEX_AUTOMATION" }),
-      Payment.countDocuments({ createdAt: { $gte: startOfUtcDay } }),
+      Payment.countDocuments({ createdAtGte: startOfUtcDay }),
     ]);
-
-    const revenueUSD = Number(agg[0]?.revenue ?? 0);
 
     return res.json({
       totalUsers,
@@ -117,18 +112,13 @@ router.get("/payments", async (req, res) => {
     const skip = (page - 1) * limit;
     const status = String(req.query.status ?? "");
 
-    const match: Record<string, unknown> = {};
+    const match: { status?: string } = {};
     if (status && status !== "ALL") {
       match.status = status;
     }
 
     const [payments, total] = await Promise.all([
-      Payment.find(match)
-        .sort({ createdAt: -1 })
-        .skip(skip)
-        .limit(limit)
-        .populate("userId", "email name")
-        .lean(),
+      Payment.findWithUsers(match, { limit, offset: skip }),
       Payment.countDocuments(match),
     ]);
 

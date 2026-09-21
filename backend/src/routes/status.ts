@@ -1,5 +1,4 @@
 import { Router, Request, Response } from "express";
-import mongoose from "mongoose";
 import { Session } from "../models/Session";
 import { Batch } from "../models/Batch";
 import { Wallet } from "../models/Wallet";
@@ -13,34 +12,27 @@ router.get("/", requireAuth, async (req: Request, res: Response) => {
   try {
     const sessionId = String(req.query.sessionId ?? "").trim();
     if (!sessionId) return res.status(400).json({ error: "sessionId is required" });
-    if (!mongoose.Types.ObjectId.isValid(sessionId)) {
-      return res.status(404).json({ error: "Session not found" });
-    }
 
-    const session = await Session.findById(sessionId).lean();
+    const session = await Session.findById(sessionId);
     if (!session) return res.status(404).json({ error: "Session not found" });
 
     if (!session.userId || session.userId.toString() !== req.user!._id.toString()) {
       return res.status(404).json({ error: "Session not found" });
     }
 
-    const [batchCount, confirmedBatches, failedBatches, sentWallets, failedWallets, confirmedBatchAgg] = await Promise.all([
-      Batch.countDocuments({ sessionId }),
-      Batch.countDocuments({ sessionId, status: "confirmed" }),
-      Batch.countDocuments({ sessionId, status: "failed" }),
-      Wallet.countDocuments({ sessionId, sent: true }),
-      Wallet.countDocuments({ sessionId, sent: { $ne: true }, failed: true }),
-      Batch.aggregate<{ total: number }>([
-        { $match: { sessionId, status: "confirmed" } },
-        { $group: { _id: null, total: { $sum: "$walletCount" } } },
-      ]),
+    const [batchCount, confirmedBatches, failedBatches, sentWallets, failedWallets, sentFromBatches] = await Promise.all([
+      Batch.count(sessionId),
+      Batch.count(sessionId, "confirmed"),
+      Batch.count(sessionId, "failed"),
+      Wallet.count(sessionId, { sent: true }),
+      Wallet.count(sessionId, { sent: false, failed: true }),
+      Batch.sumConfirmedWalletCount(sessionId),
     ]);
 
     // Session counters and wallet sync can be stale after restart/stop.
     // Use the highest trustworthy source for sent count:
     // 1) wallet docs marked sent
     // 2) sum(walletCount) of confirmed batches
-    const sentFromBatches = Number(confirmedBatchAgg?.[0]?.total ?? 0);
     const derivedSentCount = Math.max(sentWallets, sentFromBatches);
 
     // For stopped/error/done sessions, remaining wallets are effectively failed

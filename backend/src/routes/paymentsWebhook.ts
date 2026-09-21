@@ -101,14 +101,19 @@ export async function handleCoinbaseWebhook(req: Request, res: Response): Promis
             walletLimit: plan.walletLimit,
             startedAt: new Date(),
             expiresAt,
-          },
-          { upsert: true, new: true }
+          }
         );
         payment.subscriptionId = subscription._id;
       }
     }
 
-    await payment.save();
+    await Payment.update(payment._id, {
+      status: payment.status,
+      paidAt: payment.paidAt,
+      coinbaseTxHash: payment.coinbaseTxHash,
+      coinbaseCryptoType: payment.coinbaseCryptoType,
+      subscriptionId: payment.subscriptionId,
+    });
   } catch (e) {
     console.error("[payments webhook]", e);
   }

@@ -58,7 +58,7 @@ router.post("/preflight", requireAuth, requirePlan, async (req: Request, res: Re
     if (!sessionId) return res.status(400).json({ error: "sessionId is required" });
     if (!privateKey?.trim()) return res.status(400).json({ error: "privateKey is required" });
 
-    const session = await Session.findById(sessionId).lean();
+    const session = await Session.findById(sessionId);
     if (!session) return res.status(404).json({ error: "Session not found" });
 
     if (!session.userId || session.userId.toString() !== req.user!._id.toString()) {

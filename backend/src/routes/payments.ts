@@ -113,7 +113,7 @@ router.get("/status/:chargeId", requireAuth, async (req, res) => {
           } else if (last === "UNRESOLVED" || last === "CANCELED" || last === "CANCELLED") {
             payment.status = "CANCELLED";
           }
-          await payment.save();
+          await Payment.update(payment._id, { status: payment.status });
         }
       } catch {
         /* keep DB values */
@@ -141,7 +141,7 @@ router.get("/by-order/:internalOrderId", requireAuth, async (req, res) => {
   const payment = await Payment.findOne({
     coinbaseInternalOrderId: req.params.internalOrderId,
     userId: req.user!._id,
-  }).lean();
+  });
 
   if (!payment) return res.status(404).json({ error: "Not found" });
   return res.json({ chargeId: payment.coinbaseChargeId, status: payment.status });
@@ -154,11 +154,7 @@ router.get("/history", requireAuth, async (req, res) => {
     const skip = (page - 1) * limit;
 
     const [payments, total] = await Promise.all([
-      Payment.find({ userId: req.user!._id })
-        .sort({ createdAt: -1 })
-        .skip(skip)
-        .limit(limit)
-        .lean(),
+      Payment.find({ userId: req.user!._id }, { limit, offset: skip }),
       Payment.countDocuments({ userId: req.user!._id }),
     ]);
 
