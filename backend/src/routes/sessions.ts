@@ -98,10 +98,7 @@ router.get("/", async (req: Request, res: Response) => {
 router.get("/history", async (req: Request, res: Response) => {
   try {
     const limit = Math.min(500, Math.max(1, parseInt((req.query.limit as string) ?? "200", 10)));
-    const audits = await SessionAudit.find({ userId: req.user!._id })
-      .sort({ createdAt: -1 })
-      .limit(limit)
-      .lean();
+    const audits = (await SessionAudit.find({ userId: req.user!._id })).slice(0, limit);
     return res.json({ audits });
   } catch (err) {
     console.error("[sessions/history GET]", err);

@@ -1,12 +1,23 @@
-import mongoose from "mongoose";
-import { Session as DistSession } from "../models/Session";
+import { postgresPool } from "./postgres";
 
 export async function assertSessionOwned(
   sessionId: string | undefined,
-  userId: mongoose.Types.ObjectId
+  userId: string
 ): Promise<boolean> {
-  if (!sessionId) return false;
-  const doc = await DistSession.findById(sessionId).lean();
-  if (!doc?.userId) return false;
-  return doc.userId.toString() === userId.toString();
+  if (!sessionId || !postgresPool) {
+    return false;
+  }
+
+  const result = await postgresPool.query(
+    `
+      SELECT 1
+      FROM distribution_sessions
+      WHERE id = $1
+        AND user_id = $2
+      LIMIT 1
+    `,
+    [sessionId, userId]
+  );
+
+  return result.rowCount === 1;
 }

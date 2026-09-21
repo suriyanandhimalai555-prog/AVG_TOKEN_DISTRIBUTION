@@ -1,5 +1,4 @@
 import { Router } from "express";
-import mongoose from "mongoose";
 import { requireAdmin } from "../middleware/requireAdmin";
 import { User } from "../models/User";
 import { Subscription } from "../models/Subscription";
@@ -58,17 +57,18 @@ router.get("/users", async (req, res) => {
     const filter = search ? { email: { $regex: search, $options: "i" } } : {};
 
     const [users, total] = await Promise.all([
-      User.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limit).lean(),
+      User.find(filter),
       User.countDocuments(filter),
     ]);
 
-    const ids = users.map((u) => u._id);
-    const subs = await Subscription.find({ userId: { $in: ids } }).lean();
-    const subByUser = new Map(subs.map((s) => [s.userId.toString(), s]));
+    const pagedUsers = users.slice(skip, skip + limit);
+    const ids = pagedUsers.map((u) => u._id);
+    const subs = await Subscription.find({ userId: { $in: ids } });
+    const subByUser = new Map(subs.map((s) => [s.userId, s]));
 
-    const out = users.map((u) => ({
+    const out = pagedUsers.map((u) => ({
       ...u,
-      subscription: subByUser.get(u._id.toString()) ?? null,
+      subscription: subByUser.get(u._id) ?? null,
     }));
 
     return res.json({ users: out, total, page, limit });
@@ -87,7 +87,7 @@ router.patch("/users/:id", async (req, res) => {
     const id = req.params.id;
 
     if (role === "USER" || role === "ADMIN") {
-      if (role === "USER" && req.user!.role === "ADMIN" && id === req.user!._id.toString()) {
+      if (role === "USER" && req.user!.role === "ADMIN" && id === req.user!._id) {
         return res.status(400).json({ error: "You cannot revoke your own ADMIN role via this endpoint" });
       }
       await User.findByIdAndUpdate(id, { role });
@@ -98,8 +98,8 @@ router.patch("/users/:id", async (req, res) => {
       ["ACTIVE", "EXPIRED", "CANCELLED", "PENDING"].includes(subscriptionStatus)
     ) {
       await Subscription.findOneAndUpdate(
-        { userId: new mongoose.Types.ObjectId(id) },
-        { status: subscriptionStatus }
+        { userId: id },
+        { status: subscriptionStatus as "ACTIVE" | "EXPIRED" | "CANCELLED" | "PENDING" }
       );
     }
 
