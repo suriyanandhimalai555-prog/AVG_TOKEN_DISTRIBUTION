@@ -26,7 +26,7 @@ spec:
         app: holderforge-backend
 
     spec:
-      terminationGracePeriodSeconds: 150
+      terminationGracePeriodSeconds: 30
 
       imagePullSecrets:
         - name: holderforge-ghcr

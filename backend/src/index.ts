@@ -5,6 +5,7 @@ import session from "express-session";
 import connectPgSimple from "connect-pg-simple";
 import passport from "./config/passport";
 import { postgresPool } from "./lib/postgres";
+import { closeAllSseClients } from "./lib/runner";
 
 import sessionsRouter from "./routes/sessions";
 import generateRouter from "./routes/generate";
@@ -311,16 +312,22 @@ async function start(): Promise<void> {
       process.exit(0);
     });
 
-    // Maximum graceful shutdown wait.
-    // Kubernetes terminationGracePeriodSeconds must be >= this
-    // if we want to allow the full timeout.
+    // SSE progress streams and idle keep-alive sockets never finish on
+    // their own, so server.close() would wait for the full timeout below
+    // and hold up the rollout. Clients reconnect to the new pod.
+    closeAllSseClients();
+    server.closeIdleConnections();
+
+    // Maximum graceful shutdown wait for in-flight requests.
+    // Kubernetes terminationGracePeriodSeconds must be >= this.
     setTimeout(() => {
       console.error(
         "[server] Graceful shutdown timeout. Forcing exit."
       );
 
+      server.closeAllConnections();
       process.exit(1);
-    }, 120_000).unref();
+    }, 20_000).unref();
   };
 
   process.on("SIGTERM", () => {

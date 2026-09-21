@@ -38,6 +38,20 @@ export function removeSseClient(sessionId: string, res: Response): void {
   }
 }
 
+/** Ends every open SSE stream (used on shutdown; browsers' EventSource reconnects on its own). */
+export function closeAllSseClients(): void {
+  for (const clients of sseClients.values()) {
+    for (const client of clients) {
+      try {
+        client.end();
+      } catch {
+        // client already gone
+      }
+    }
+  }
+  sseClients.clear();
+}
+
 export function emitSseEvent(sessionId: string, event: string, data: unknown): void {
   const clients = sseClients.get(sessionId) ?? [];
   const payload = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
