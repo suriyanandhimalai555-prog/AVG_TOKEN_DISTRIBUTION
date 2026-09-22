@@ -226,6 +226,9 @@ app.use(passport.initialize());
 app.use(passport.session());
 
 // ─── Health check ─────────────────────────────────────────────────────────────
+app.get("/", (_req, res) => {
+  res.send("AVG Token Distribution Backend API is running");
+});
 
 app.get("/health", (_req, res) => {
   res.status(200).json({
