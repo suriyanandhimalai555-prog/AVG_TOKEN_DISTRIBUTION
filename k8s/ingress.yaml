@@ -17,6 +17,7 @@ spec:
     - hosts:
         - holderforge.io
         - www.holderforge.io
+        - api.holderforge.io
       secretName: holderforge-tls
 
   rules:
@@ -73,3 +74,14 @@ spec:
                 name: holderforge-frontend
                 port:
                   number: 80
+
+    - host: api.holderforge.io
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: holderforge-backend
+                port:
+                  number: 4002
