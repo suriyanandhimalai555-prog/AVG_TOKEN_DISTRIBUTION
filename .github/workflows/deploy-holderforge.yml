@@ -333,72 +333,103 @@ jobs:
             echo "❤️ BACKEND INTERNAL HEALTH"
             echo "=================================================="
 
-            BACKEND_POD="$(
+            # Choose only a Running, Ready pod that is not terminating.
+            select_ready_pod() {
+              local label="$1"
+
               kubectl get pods \
                 -n "$NAMESPACE" \
-                -l app=holderforge-backend \
-                -o jsonpath='{.items[0].metadata.name}'
-            )"
+                -l "$label" \
+                -o jsonpath='{range .items[*]}{.metadata.name}{"|"}{.metadata.deletionTimestamp}{"|"}{.status.phase}{"|"}{.status.containerStatuses[0].ready}{"\n"}{end}' \
+                2>/dev/null |
+                awk -F'|' '$2 == "" && $3 == "Running" && $4 == "true" {print $1; exit}' ||
+                true
+            }
 
-            if [ -z "$BACKEND_POD" ]; then
-              echo "❌ Backend pod not found."
+            BACKEND_HEALTHY="no"
+
+            for attempt in $(seq 1 10); do
+              BACKEND_POD="$(select_ready_pod "app=holderforge-backend")"
+
+              if [ -z "$BACKEND_POD" ]; then
+                echo "No ready backend pod found ($attempt/10)."
+                sleep 3
+                continue
+              fi
+
+              echo "Backend pod: $BACKEND_POD"
+              echo "Health attempt: $attempt/10"
+
+              if kubectl --request-timeout=15s exec \
+                -n "$NAMESPACE" "$BACKEND_POD" \
+                -- node -e "
+                  fetch('http://holderforge-backend:4002/health')
+                    .then(async r => {
+                      const body = await r.text();
+                      console.log('HTTP status:', r.status);
+                      console.log(body);
+                      if (!r.ok) process.exit(1);
+                    })
+                    .catch(err => {
+                      console.error(err);
+                      process.exit(1);
+                    });
+                "; then
+                BACKEND_HEALTHY="yes"
+                break
+              fi
+
+              echo "Backend check failed; the pod may have changed. Retrying."
+              sleep 3
+            done
+
+            if [ "$BACKEND_HEALTHY" != "yes" ]; then
+              echo "Backend health check failed after retries."
               rollback_deployment
             fi
 
-            echo "🔎 Backend pod: ${BACKEND_POD}"
-
-            if kubectl exec \
-              -n "$NAMESPACE" \
-              "$BACKEND_POD" \
-              -- node -e "
-                fetch('http://holderforge-backend:4002/health')
-                  .then(async r => {
-                    if (!r.ok) process.exit(1);
-                    console.log(await r.text());
-                  })
-                  .catch(() => process.exit(1));
-              "; then
-
-              echo "✅ Backend internal health check successful."
-            else
-              echo "❌ Backend internal health check failed."
-              rollback_deployment
-            fi
-
+            echo "Backend internal health check successful."
             echo ""
+            echo "=================================================="
 
             echo "=================================================="
             echo "❤️ FRONTEND INTERNAL HEALTH"
             echo "=================================================="
 
-            FRONTEND_POD="$(
-              kubectl get pods \
-                -n "$NAMESPACE" \
-                -l app=holderforge-frontend \
-                -o jsonpath='{.items[0].metadata.name}'
-            )"
+            FRONTEND_HEALTHY="no"
 
-            if [ -z "$FRONTEND_POD" ]; then
-              echo "❌ Frontend pod not found."
+            for attempt in $(seq 1 10); do
+              FRONTEND_POD="$(select_ready_pod "app=holderforge-frontend")"
+
+              if [ -z "$FRONTEND_POD" ]; then
+                echo "No ready frontend pod found ($attempt/10)."
+                sleep 3
+                continue
+              fi
+
+              echo "Frontend pod: $FRONTEND_POD"
+              echo "Frontend health attempt: $attempt/10"
+
+              if kubectl --request-timeout=15s exec \
+                -n "$NAMESPACE" "$FRONTEND_POD" \
+                -- wget -q --spider http://holderforge-frontend/; then
+                FRONTEND_HEALTHY="yes"
+                break
+              fi
+
+              echo "Frontend check failed; the pod may have changed. Retrying."
+              sleep 3
+            done
+
+            if [ "$FRONTEND_HEALTHY" != "yes" ]; then
+              echo "Frontend health check failed after retries."
               rollback_deployment
             fi
 
-            echo "🔎 Frontend pod: ${FRONTEND_POD}"
-
-            if kubectl exec \
-              -n "$NAMESPACE" \
-              "$FRONTEND_POD" \
-              -- wget -q --spider http://holderforge-frontend/; then
-
-              echo "✅ Frontend internal health check successful."
-            else
-              echo "❌ Frontend internal health check failed."
-              rollback_deployment
-            fi
-
+            echo "Frontend internal health check successful."
             echo ""
-
             echo "=================================================="
+
             echo "🌐 EXTERNAL HTTPS INGRESS CHECK"
             echo "=================================================="
 
