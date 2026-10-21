@@ -77,7 +77,7 @@ jobs:
           push: true
 
           build-args: |
-            VITE_API_URL=https://holderforge.io
+            VITE_API_URL=https://api.holderforge.io
 
           tags: |
             ${{ env.FRONTEND_IMAGE }}:${{ github.sha }}

@@ -10,7 +10,7 @@ RUN npm ci
 COPY . .
 
 # Production API base URL
-ARG VITE_API_URL=https://holderforge.io
+ARG VITE_API_URL=https://api.holderforge.io
 ENV VITE_API_URL=$VITE_API_URL
 
 RUN npm run build
