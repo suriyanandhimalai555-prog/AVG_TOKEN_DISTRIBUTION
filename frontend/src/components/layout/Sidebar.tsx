@@ -9,6 +9,8 @@ import {
   History,
   UserCircle,
   Shield,
+  Wallet,
+  Landmark,
 } from "lucide-react";
 import toast from "react-hot-toast";
 import { store } from "@/lib/store";
@@ -16,6 +18,7 @@ import { cn } from "@/lib/cn";
 import { useAuth } from "@/hooks/useAuth";
 import { useTheme } from "@/theme/ThemeProvider";
 import { ThemeToggleButton } from "@/components/ThemeToggleButton";
+import { useManagedEnabled } from "@/components/managed/client";
 
 const NAV_ITEMS = [
   { to: "/dashboard/setup", icon: Settings, label: "SETUP", requiresPlan: false },
@@ -42,6 +45,10 @@ export default function Sidebar() {
 
   const planActive = subscription?.status === "ACTIVE";
   const canAccessPlanFeatures = planActive || user?.role === "ADMIN";
+  const isAdmin = user?.role === "ADMIN";
+  // Only admins query the managed-wallets health endpoint; a 404 hides the entries.
+  const managed = useManagedEnabled({ enabled: isAdmin });
+  const showManaged = isAdmin && managed.enabled;
 
   const toastStyle = useMemo(
     () => ({
@@ -170,6 +177,38 @@ export default function Sidebar() {
             <Shield size={18} className="flex-shrink-0" />
             {expanded && (
               <span className="text-[11px] font-semibold uppercase tracking-wide whitespace-nowrap">Admin</span>
+            )}
+          </NavLink>
+        )}
+
+        {showManaged && (
+          <NavLink
+            to="/admin/managed"
+            className={cn(
+              "relative flex h-10 items-center gap-3 px-4 transition-colors duration-150",
+              "text-[var(--app-muted)] hover:bg-[var(--app-panel)] hover:text-[var(--app-text)]",
+              location.pathname.startsWith("/admin/managed") && "border-l-2 border-accent bg-[var(--app-accent-dim)] text-accent"
+            )}
+          >
+            <Wallet size={18} className="flex-shrink-0" />
+            {expanded && (
+              <span className="text-[11px] font-semibold uppercase tracking-wide whitespace-nowrap">Managed</span>
+            )}
+          </NavLink>
+        )}
+
+        {showManaged && (
+          <NavLink
+            to="/admin/treasury"
+            className={cn(
+              "relative flex h-10 items-center gap-3 px-4 transition-colors duration-150",
+              "text-[var(--app-muted)] hover:bg-[var(--app-panel)] hover:text-[var(--app-text)]",
+              location.pathname.startsWith("/admin/treasury") && "border-l-2 border-accent bg-[var(--app-accent-dim)] text-accent"
+            )}
+          >
+            <Landmark size={18} className="flex-shrink-0" />
+            {expanded && (
+              <span className="text-[11px] font-semibold uppercase tracking-wide whitespace-nowrap">Treasury</span>
             )}
           </NavLink>
         )}

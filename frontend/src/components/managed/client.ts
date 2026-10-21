@@ -42,15 +42,14 @@
  * Errors must carry the axios shape (`err.response?.status`,
  * `err.response?.data?.{error,code}`); see apiErrorMessage() in ./format.ts.
  */
-import { managedApi } from "@/lib/managedApi.mock";
+import { managedApi, useManagedEnabled } from "@/lib/managedApi";
 
 export { managedApi };
 export type ManagedApiClient = typeof managedApi;
 
 /**
- * Stub: whether the backend reports the feature enabled. N6 replaces this with
- * a hook backed by GET /api/admin/managed/health (404 → enabled: false).
+ * Whether the backend reports the feature enabled, backed by
+ * GET /api/admin/managed/health (404 or 403 → enabled: false). Implemented in
+ * lib/managedApi.ts; re-exported here so the admin UI keeps a single import.
  */
-export function useManagedEnabled(): { enabled: boolean; loading: boolean } {
-  return { enabled: true, loading: false };
-}
+export { useManagedEnabled };
