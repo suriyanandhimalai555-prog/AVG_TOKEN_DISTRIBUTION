@@ -1,0 +1,413 @@
+import { describe, expect, it } from "vitest";
+import { Interface, getAddress, zeroPadValue } from "ethers";
+import {
+  ManagedIndexer,
+  TRANSFER_SIG,
+  decodeTransferLog,
+  padAddressTopic,
+} from "../../src/managed/chain/indexer";
+import type { IndexerOptions } from "../../src/managed/chain/indexer";
+import type { BalanceRefresher, DirtyPair } from "../../src/managed/chain/balances";
+import type {
+  ActiveWalletAddress,
+  ChainReader,
+  DepositInsert,
+  DepositsPort,
+  DiscoveredTokenInput,
+  IndexerStatePort,
+  IndexerStateRow,
+  IndexerStateUpsert,
+  LogFilter,
+  LogLike,
+  LoggerPort,
+  PoolRow,
+  PoolsPort,
+  TokenRow,
+  TokensPort,
+  WalletsPort,
+} from "../../src/managed/chain/ports";
+import type { Network } from "../../src/managed/types";
+import fixture from "./fixtures/transferLogs.json";
+
+// ─── Fixture → ethers-shaped logs ────────────────────────────────────────────
+
+interface RawLog {
+  address: string;
+  topics: string[];
+  data: string;
+  blockNumber: string;
+  transactionHash: string;
+  logIndex: string;
+}
+
+function toLogLike(raw: RawLog): LogLike {
+  return {
+    address: raw.address,
+    topics: raw.topics,
+    data: raw.data,
+    blockNumber: Number(BigInt(raw.blockNumber)),
+    transactionHash: raw.transactionHash,
+    index: Number(BigInt(raw.logIndex)),
+  };
+}
+
+const FIXTURE_LOGS: LogLike[] = (fixture.logs as RawLog[]).map(toLogLike);
+
+const NETWORK: Network = "bscTestnet";
+const W1 = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8";
+const W2 = "0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC";
+const SENDER = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266";
+const TOKEN_A = "0x1111111111111111111111111111111111111111";
+const TOKEN_B = "0x2222222222222222222222222222222222222222";
+
+const erc20 = new Interface([
+  "function symbol() view returns (string)",
+  "function name() view returns (string)",
+  "function decimals() view returns (uint8)",
+]);
+
+// ─── Fakes ───────────────────────────────────────────────────────────────────
+
+class FakeProvider implements ChainReader {
+  latest = 1016; // head = 1001 with 15 confirmations
+  getLogsCalls: LogFilter[] = [];
+  failOnBlock: number | null = null;
+
+  async getBlockNumber(): Promise<number> {
+    return this.latest;
+  }
+  async getLogs(filter: LogFilter): Promise<LogLike[]> {
+    this.getLogsCalls.push(filter);
+    if (this.failOnBlock !== null && filter.fromBlock <= this.failOnBlock && filter.toBlock >= this.failOnBlock) {
+      throw Object.assign(new Error("429 Too Many Requests"), { code: "SERVER_ERROR" });
+    }
+    // Like a node: respect the block range (topic filtering is left to the indexer on purpose).
+    return FIXTURE_LOGS.filter((l) => l.blockNumber >= filter.fromBlock && l.blockNumber <= filter.toBlock);
+  }
+  async getBlock(blockNumber: number): Promise<{ timestamp: number } | null> {
+    return { timestamp: 1_700_000_000 + blockNumber };
+  }
+  async call(tx: { to: string; data: string }): Promise<string> {
+    if (tx.to.toLowerCase() === TOKEN_A) {
+      const selector = tx.data.slice(0, 10);
+      if (selector === erc20.getFunction("symbol")!.selector) return erc20.encodeFunctionResult("symbol", ["AAA"]);
+      if (selector === erc20.getFunction("name")!.selector) return erc20.encodeFunctionResult("name", ["Token A"]);
+      if (selector === erc20.getFunction("decimals")!.selector) return erc20.encodeFunctionResult("decimals", [6]);
+    }
+    throw new Error("execution reverted");
+  }
+  async getBalance(): Promise<bigint> {
+    return 0n;
+  }
+}
+
+class FakeTokens implements TokensPort {
+  discovered: DiscoveredTokenInput[] = [];
+  async upsertDiscovered(input: DiscoveredTokenInput): Promise<void> {
+    this.discovered.push(input);
+  }
+  async listByNetwork(): Promise<TokenRow[]> {
+    return this.discovered.map((d) => ({
+      tokenAddress: d.tokenAddress,
+      symbol: d.symbol,
+      name: d.name,
+      decimals: d.decimals,
+      hidden: false,
+      source: "DISCOVERED",
+    }));
+  }
+}
+
+class FakeDeposits implements DepositsPort {
+  rows = new Map<string, DepositInsert>();
+  calls = 0;
+  async insertManyIgnoreDuplicates(rows: DepositInsert[]): Promise<number> {
+    this.calls += 1;
+    let inserted = 0;
+    for (const r of rows) {
+      const key = `${r.txHash}:${r.logIndex}`;
+      if (!this.rows.has(key)) {
+        this.rows.set(key, r);
+        inserted += 1;
+      }
+    }
+    return inserted;
+  }
+}
+
+class FakeIndexerState implements IndexerStatePort {
+  state: IndexerStateRow | null;
+  history: IndexerStateUpsert[] = [];
+  constructor(lastScannedBlock: number) {
+    this.state = { network: NETWORK, lastScannedBlock, lastRunAt: null, lastError: null };
+  }
+  async get(): Promise<IndexerStateRow | null> {
+    return this.state;
+  }
+  async upsert(row: IndexerStateUpsert): Promise<void> {
+    this.history.push(row);
+    const prev = this.state ?? { network: NETWORK, lastScannedBlock: 0, lastRunAt: null, lastError: null };
+    this.state = {
+      network: row.network,
+      lastScannedBlock: row.lastScannedBlock ?? prev.lastScannedBlock,
+      lastRunAt: row.lastRunAt === undefined ? prev.lastRunAt : row.lastRunAt,
+      lastError: row.lastError === undefined ? prev.lastError : row.lastError,
+    };
+  }
+}
+
+class FakeBalances implements BalanceRefresher {
+  refreshed: DirtyPair[][] = [];
+  fullRuns = 0;
+  masterRuns = 0;
+  async refreshPairs(_network: Network, pairs: DirtyPair[]): Promise<void> {
+    this.refreshed.push(pairs);
+  }
+  async refreshAll(): Promise<boolean> {
+    this.fullRuns += 1;
+    return false;
+  }
+  async refreshMaster(): Promise<void> {
+    this.masterRuns += 1;
+  }
+}
+
+const wallets: WalletsPort = {
+  async findById() {
+    return null;
+  },
+  async listActiveAddressesByNetwork(): Promise<ActiveWalletAddress[]> {
+    return [
+      { walletId: "w1", poolId: "p1", address: W1 },
+      { walletId: "w2", poolId: "p1", address: W2 },
+    ];
+  },
+};
+
+const pools: PoolsPort = {
+  async findById() {
+    return null;
+  },
+  async listActive(): Promise<PoolRow[]> {
+    return [
+      {
+        id: "p1",
+        name: "Pool",
+        network: NETWORK,
+        masterAddress: SENDER,
+        status: "ACTIVE",
+        accountPath: "m/44'/60'/0'/0",
+      },
+    ];
+  },
+};
+
+const silent: LoggerPort = { info: () => undefined, warn: () => undefined, error: () => undefined };
+
+const options: IndexerOptions = {
+  intervalMs: 30_000,
+  confirmations: 15,
+  blockChunk: 1000,
+  addressChunk: 500,
+  backoffBaseMs: 5_000,
+  backoffMaxMs: 300_000,
+};
+
+function build(lastScannedBlock: number, overrides: Partial<IndexerOptions> = {}) {
+  const provider = new FakeProvider();
+  const tokens = new FakeTokens();
+  const deposits = new FakeDeposits();
+  const state = new FakeIndexerState(lastScannedBlock);
+  const balances = new FakeBalances();
+  let now = 1_700_000_000_000;
+  const clock = { now: () => now, sleep: async (ms: number) => void (now += ms) };
+  const indexer = new ManagedIndexer(
+    { pools, wallets, tokens, deposits, indexerState: state, balances, providerFor: () => provider, clock, logger: silent },
+    { ...options, ...overrides }
+  );
+  return { indexer, provider, tokens, deposits, state, balances, advance: (ms: number) => void (now += ms) };
+}
+
+// ─── Tests ───────────────────────────────────────────────────────────────────
+
+describe("decodeTransferLog", () => {
+  it("decodes token, from, to, amount, tx hash, log index", () => {
+    const d = decodeTransferLog(FIXTURE_LOGS[0]);
+    expect(d).toEqual({
+      token: TOKEN_A,
+      from: SENDER,
+      to: W1,
+      amountWei: 100n * 10n ** 18n,
+      txHash: FIXTURE_LOGS[0].transactionHash,
+      logIndex: 0,
+      blockNumber: 1000,
+    });
+  });
+
+  it("rejects malformed logs", () => {
+    expect(decodeTransferLog({ ...FIXTURE_LOGS[0], topics: [TRANSFER_SIG] })).toBeNull();
+    expect(decodeTransferLog({ ...FIXTURE_LOGS[0], topics: ["0x" + "11".repeat(32), ...FIXTURE_LOGS[0].topics.slice(1)] })).toBeNull();
+    expect(decodeTransferLog({ ...FIXTURE_LOGS[0], data: "0xzz" })).toBeNull();
+  });
+
+  it("treats empty data as zero", () => {
+    expect(decodeTransferLog({ ...FIXTURE_LOGS[0], data: "0x" })?.amountWei).toBe(0n);
+  });
+
+  it("pads addresses to 32 bytes like ethers.zeroPadValue", () => {
+    expect(padAddressTopic(W1)).toBe(zeroPadValue(getAddress(W1), 32));
+    expect(padAddressTopic(W1)).toBe(FIXTURE_LOGS[0].topics[2]);
+  });
+});
+
+describe("ManagedIndexer.runOnce", () => {
+  it("decodes fixture logs into deposits and discovered tokens for managed wallets only", async () => {
+    const t = build(999);
+    const result = await t.indexer.runOnce(NETWORK);
+
+    expect(result.error).toBeNull();
+    expect(result.ran).toBe(true);
+    expect(result.latestBlock).toBe(1016);
+    expect(result.head).toBe(1001);
+    expect(result.fromBlock).toBe(1000);
+    expect(result.scannedTo).toBe(1001);
+    expect(result.logs).toBe(4);
+    expect(result.depositsInserted).toBe(3);
+    expect(result.tokensDiscovered).toBe(2);
+    expect(result.dirtyPairs).toBe(3);
+
+    // getLogs filter shape: [TRANSFER_SIG, null, [padded managed addresses]]
+    expect(t.provider.getLogsCalls).toHaveLength(1);
+    const filter = t.provider.getLogsCalls[0];
+    expect(filter.fromBlock).toBe(1000);
+    expect(filter.toBlock).toBe(1001);
+    expect(filter.topics[0]).toBe(TRANSFER_SIG);
+    expect(filter.topics[1]).toBeNull();
+    expect(filter.topics[2]).toEqual([padAddressTopic(W1), padAddressTopic(W2)]);
+
+    // Deposits: the log to the non-managed address is skipped.
+    const rows = [...t.deposits.rows.values()];
+    expect(rows).toHaveLength(3);
+    expect(rows.map((r) => r.walletId).sort()).toEqual(["w1", "w1", "w2"]);
+    const w1A = rows.find((r) => r.walletId === "w1" && r.asset === TOKEN_A)!;
+    expect(w1A.amountWei).toBe((100n * 10n ** 18n).toString());
+    expect(w1A.fromAddress).toBe(SENDER);
+    expect(w1A.txHash).toBe(FIXTURE_LOGS[0].transactionHash);
+    expect(w1A.logIndex).toBe(0);
+    expect(w1A.blockNumber).toBe(1000);
+    expect(w1A.blockTime).toEqual(new Date((1_700_000_000 + 1000) * 1000));
+    const w2A = rows.find((r) => r.walletId === "w2")!;
+    expect(w2A.logIndex).toBe(3);
+    expect(w2A.amountWei).toBe((5n * 10n ** 18n).toString());
+    const w1B = rows.find((r) => r.walletId === "w1" && r.asset === TOKEN_B)!;
+    expect(w1B.amountWei).toBe("1000000");
+
+    // Tokens: metadata for A, fallbacks for B (every call reverts).
+    expect(t.tokens.discovered).toHaveLength(2);
+    const a = t.tokens.discovered.find((d) => d.tokenAddress === TOKEN_A)!;
+    expect(a).toEqual({ network: NETWORK, tokenAddress: TOKEN_A, symbol: "AAA", name: "Token A", decimals: 6, firstSeenBlock: 1000 });
+    const b = t.tokens.discovered.find((d) => d.tokenAddress === TOKEN_B)!;
+    expect(b).toEqual({ network: NETWORK, tokenAddress: TOKEN_B, symbol: "UNKNOWN", name: "Unknown token", decimals: 18, firstSeenBlock: 1001 });
+
+    // Dirty pairs handed to balances.refreshPairs.
+    expect(t.balances.refreshed).toHaveLength(1);
+    expect(t.balances.refreshed[0].map((p) => `${p.walletId}:${p.asset}`).sort()).toEqual([
+      `w1:${TOKEN_A}`,
+      `w1:${TOKEN_B}`,
+      `w2:${TOKEN_A}`,
+    ]);
+
+    // State advanced to head, lastRunAt stamped, no error.
+    expect(t.state.state?.lastScannedBlock).toBe(1001);
+    expect(t.state.state?.lastRunAt).not.toBeNull();
+    expect(t.state.state?.lastError).toBeNull();
+  });
+
+  it("a duplicate run inserts nothing new", async () => {
+    const t = build(999);
+    await t.indexer.runOnce(NETWORK);
+    expect(t.deposits.rows.size).toBe(3);
+
+    // Second run: state is at head, nothing to scan.
+    const second = await t.indexer.runOnce(NETWORK);
+    expect(second.skippedReason).toBe("up_to_date");
+    expect(second.depositsInserted).toBe(0);
+    expect(t.deposits.rows.size).toBe(3);
+    expect(t.provider.getLogsCalls).toHaveLength(1);
+
+    // Re-scan of the same range (state rewound): unique (tx_hash, log_index) absorbs it.
+    t.state.state = { network: NETWORK, lastScannedBlock: 999, lastRunAt: null, lastError: null };
+    const rescan = await t.indexer.runOnce(NETWORK);
+    expect(rescan.logs).toBe(4);
+    expect(rescan.depositsInserted).toBe(0);
+    expect(t.deposits.rows.size).toBe(3);
+    // Tokens already known → not re-upserted.
+    expect(t.tokens.discovered).toHaveLength(2);
+  });
+
+  it("a fresh network starts at head and does not backfill", async () => {
+    const t = build(0);
+    const result = await t.indexer.runOnce(NETWORK);
+    expect(result.fromBlock).toBe(1001);
+    expect(result.scannedTo).toBe(1001);
+    expect(t.provider.getLogsCalls[0]).toMatchObject({ fromBlock: 1001, toBlock: 1001 });
+    // Only the block-1001 logs: W1 ← token B (the other 1001 log is to a non-managed address).
+    expect(result.depositsInserted).toBe(1);
+    expect(t.state.state?.lastScannedBlock).toBe(1001);
+  });
+
+  it("scans in block chunks and advances state after each chunk", async () => {
+    const t = build(999, { blockChunk: 1 });
+    const result = await t.indexer.runOnce(NETWORK);
+    expect(t.provider.getLogsCalls.map((f) => [f.fromBlock, f.toBlock])).toEqual([
+      [1000, 1000],
+      [1001, 1001],
+    ]);
+    const advances = t.state.history.filter((h) => h.lastScannedBlock !== undefined).map((h) => h.lastScannedBlock);
+    expect(advances).toEqual([1000, 1001]);
+    expect(result.depositsInserted).toBe(3);
+  });
+
+  it("on an RPC error records last_error, keeps state at the last good chunk, and backs off", async () => {
+    const t = build(999, { blockChunk: 1 });
+    t.provider.failOnBlock = 1001;
+    const result = await t.indexer.runOnce(NETWORK);
+    expect(result.error).toContain("429");
+    expect(result.scannedTo).toBe(1000);
+    expect(t.state.state?.lastScannedBlock).toBe(1000);
+    expect(t.state.state?.lastError).toContain("429");
+    // Dirty pairs from the good chunk are still refreshed.
+    expect(t.balances.refreshed).toHaveLength(1);
+
+    // Backoff window: the next run is skipped until it elapses.
+    const skipped = await t.indexer.runOnce(NETWORK);
+    expect(skipped.ran).toBe(false);
+    expect(skipped.skippedReason).toBe("backoff");
+
+    t.provider.failOnBlock = null;
+    t.advance(5_001);
+    const resumed = await t.indexer.runOnce(NETWORK);
+    expect(resumed.error).toBeNull();
+    expect(resumed.fromBlock).toBe(1001);
+    expect(t.state.state?.lastScannedBlock).toBe(1001);
+    expect(t.state.state?.lastError).toBeNull();
+    expect(t.deposits.rows.size).toBe(3);
+  });
+
+  it("chunks addresses by addressChunk", async () => {
+    const t = build(999, { addressChunk: 1 });
+    await t.indexer.runOnce(NETWORK);
+    expect(t.provider.getLogsCalls).toHaveLength(2);
+    expect(t.provider.getLogsCalls[0].topics[2]).toEqual([padAddressTopic(W1)]);
+    expect(t.provider.getLogsCalls[1].topics[2]).toEqual([padAddressTopic(W2)]);
+    // Each address chunk returns the same unfiltered fixture; dedupe is by (tx, logIndex).
+    expect(t.deposits.rows.size).toBe(3);
+  });
+
+  it("concurrent runOnce calls for the same network share one scan", async () => {
+    const t = build(999);
+    const [a, b] = await Promise.all([t.indexer.runOnce(NETWORK), t.indexer.runOnce(NETWORK)]);
+    expect(a).toBe(b);
+    expect(t.provider.getLogsCalls).toHaveLength(1);
+  });
+});

@@ -14,7 +14,12 @@
     "generate:wallets": "npx ts-node scripts/generate-wallets.ts",
     "prepare:distribution": "npx ts-node scripts/prepare-distribution.ts",
     "distribute": "npx ts-node scripts/distribute.ts",
-    "export": "npx ts-node scripts/export-results.ts"
+    "export": "npx ts-node scripts/export-results.ts",
+    "recover:hd": "npx ts-node scripts/recover-hd-wallets.ts",
+    "migrate": "node dist/migrate.js",
+    "migrate:dev": "ts-node src/migrate.ts",
+    "managed:gen-key": "ts-node scripts/managed/gen-key.ts",
+    "test": "vitest run"
   },
   "dependencies": {
     "@openzeppelin/contracts": "^5.0.0",
@@ -45,6 +50,7 @@
     "hardhat": "^2.22.0",
     "ts-node": "^10.9.2",
     "ts-node-dev": "^2.0.0",
-    "typescript": "^5.4.3"
+    "typescript": "^5.4.3",
+    "vitest": "^2.1.9"
   }
 }
