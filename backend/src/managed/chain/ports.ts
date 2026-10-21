@@ -237,6 +237,10 @@ export interface ClockPort {
 
 export type LogMeta = Record<string, unknown>;
 
+/**
+ * Required by every chain-layer constructor. Implementations MUST redact
+ * (see the file header); there is no console fallback.
+ */
 export interface LoggerPort {
   info(message: string, meta?: LogMeta): void;
   warn(message: string, meta?: LogMeta): void;
@@ -297,9 +301,6 @@ export const systemClock: ClockPort = {
   sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
 };
 
-/** Default logger: console with the `[managed]` prefix. Wrap with redact() in N5. */
-export const consoleLogger: LoggerPort = {
-  info: (message, meta) => console.log(`[managed] ${message}`, meta ?? ""),
-  warn: (message, meta) => console.warn(`[managed] ${message}`, meta ?? ""),
-  error: (message, meta) => console.error(`[managed] ${message}`, meta ?? ""),
-};
+// There is deliberately no default logger here (SR-09): every chain-layer
+// constructor requires a `LoggerPort`, and the only production implementation
+// is the redacting `loggerPort` in `../adapters` (managedLog → redact()).

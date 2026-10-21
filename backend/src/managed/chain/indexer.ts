@@ -9,10 +9,14 @@
  *   addresses OR-listed in topic[2] in groups of MANAGED_INDEXER_ADDRESS_CHUNK
  *   (default 500), filter topics = [TRANSFER_SIG, null, paddedAddresses[]].
  *   Decode token = log.address (lowercase), from = topic1, to = topic2,
- *   amount = BigInt(log.data). Upsert token metadata on first sight, insert
- *   deposits (unique on tx_hash + log_index), collect dirty (wallet, asset)
- *   pairs, advance indexer state after every block chunk. On error: record
- *   last_error, back off, stop the cycle without advancing past the failed chunk.
+ *   amount = BigInt(log.data) after a strict shape check (exactly 3 topics,
+ *   data = one 32-byte word, amount > 0; anything else is counted as
+ *   skippedMalformed and ignored — SR-02). Upsert token metadata on first
+ *   sight, insert deposits (unique on tx_hash + log_index; a store rejection
+ *   falls back to row-by-row so one bad row never stalls the chunk), collect
+ *   dirty (wallet, asset) pairs, advance indexer state after every block
+ *   chunk. On a transient error: record last_error, back off, stop the cycle
+ *   without advancing past the failed chunk.
  *
  * Native BNB deposits have no log; they surface through refreshAll as balance
  * changes only.
@@ -35,8 +39,8 @@ import type {
   TokensPort,
   WalletsPort,
 } from "./ports";
-import { consoleLogger, systemClock } from "./ports";
-import { resilientProvider } from "./rpc";
+import { systemClock } from "./ports";
+import { resilientProvider, shortRpcError } from "./rpc";
 
 export const TRANSFER_SIG =
   "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
@@ -50,7 +54,8 @@ export interface IndexerDeps {
   balances: BalanceRefresher;
   providerFor?: (network: Network) => ChainReader;
   clock?: ClockPort;
-  logger?: LoggerPort;
+  /** Required: a redacting logger (SR-09). */
+  logger: LoggerPort;
 }
 
 export interface IndexerOptions {
@@ -94,7 +99,15 @@ export interface IndexerRunResult {
   /** Last block whose chunk completed (= new last_scanned_block). */
   scannedTo: number | null;
   logs: number;
+  /**
+   * Logs returned by eth_getLogs that `decodeTransferLog` rejected: not
+   * exactly 3 topics (ERC-721), `data` not one 32-byte word, zero amount,
+   * undecodable addresses (SR-02).
+   */
+  skippedMalformed: number;
   depositsInserted: number;
+  /** Rows the store rejected individually (row-by-row fallback, SR-02). */
+  skippedRows: number;
   tokensDiscovered: number;
   dirtyPairs: number;
   error: string | null;
@@ -124,19 +137,28 @@ function topicToAddress(topic: string): string | null {
   }
 }
 
-/** Decodes one eth_getLogs entry; null when it is not a well-formed Transfer. */
+/** Exactly one ABI word: 0x + 64 hex chars (< 2^256, fits NUMERIC(78,0)). */
+const DATA_WORD_RE = /^0x[0-9a-fA-F]{64}$/;
+
+/**
+ * Decodes one eth_getLogs entry; null when it is not a well-formed ERC-20
+ * Transfer with a non-zero amount (SR-02). `log.data` is attacker-controlled:
+ * any contract can emit a `Transfer` to a managed address, so the shape is
+ * checked strictly instead of trusting `BigInt(log.data)`.
+ *   - exactly 3 topics (ERC-721 Transfer has 4 and empty data),
+ *   - data = one 32-byte word (longer data would overflow the NUMERIC column
+ *     and stall the chunk forever),
+ *   - amount > 0 (zero-value transfers are noise, never a deposit).
+ */
 export function decodeTransferLog(log: LogLike): DecodedTransfer | null {
-  if (!log.topics || log.topics.length < 3) return null;
-  if (log.topics[0].toLowerCase() !== TRANSFER_SIG) return null;
+  if (!log.topics || log.topics.length !== 3) return null;
+  if (typeof log.topics[0] !== "string" || log.topics[0].toLowerCase() !== TRANSFER_SIG) return null;
   const from = topicToAddress(log.topics[1]);
   const to = topicToAddress(log.topics[2]);
   if (!from || !to) return null;
-  let amountWei: bigint;
-  try {
-    amountWei = !log.data || log.data === "0x" ? 0n : BigInt(log.data);
-  } catch {
-    return null;
-  }
+  if (typeof log.data !== "string" || !DATA_WORD_RE.test(log.data)) return null;
+  const amountWei = BigInt(log.data);
+  if (amountWei === 0n) return null;
   let token: string;
   try {
     token = getAddress(log.address).toLowerCase();
@@ -161,8 +183,26 @@ function chunk<T>(items: T[], size: number): T[][] {
 }
 
 function errorMessage(err: unknown): string {
-  const msg = err instanceof Error ? err.message : String(err);
-  return msg.slice(0, 500);
+  const { code, message } = shortRpcError(err);
+  return code && !message.includes(code) ? `${code}: ${message}` : message;
+}
+
+/**
+ * Postgres SQLSTATE classes (and socket errors) that are worth retrying as a
+ * whole chunk: connection failures (08), transaction rollbacks such as
+ * deadlock / serialization (40), insufficient resources (53), operator
+ * intervention (57). Everything else (22 data exception such as numeric
+ * overflow, 23 integrity, 42 syntax) is a property of the rows.
+ */
+export function isTransientStoreError(err: unknown): boolean {
+  if (!err || typeof err !== "object") return false;
+  const code = (err as { code?: unknown }).code;
+  if (typeof code === "string") {
+    if (/^(08|40|53|57)/.test(code)) return true;
+    if (/^(ECONNRESET|ECONNREFUSED|ETIMEDOUT|EPIPE|EAI_AGAIN)$/.test(code)) return true;
+  }
+  const message = String((err as { message?: unknown }).message ?? "");
+  return /connection terminated|connection timeout|timeout exceeded|terminating connection/i.test(message);
 }
 
 export class ManagedIndexer {
@@ -181,7 +221,7 @@ export class ManagedIndexer {
     private readonly options: IndexerOptions = indexerOptionsFromEnv()
   ) {
     this.clock = deps.clock ?? systemClock;
-    this.logger = deps.logger ?? consoleLogger;
+    this.logger = deps.logger;
     this.providerFor = deps.providerFor ?? resilientProvider;
   }
 
@@ -259,7 +299,9 @@ export class ManagedIndexer {
       fromBlock: null,
       scannedTo: null,
       logs: 0,
+      skippedMalformed: 0,
       depositsInserted: 0,
+      skippedRows: 0,
       tokensDiscovered: 0,
       dirtyPairs: 0,
       error: null,
@@ -343,7 +385,10 @@ export class ManagedIndexer {
 
             for (const log of logs) {
               const decoded = decodeTransferLog(log);
-              if (!decoded) continue;
+              if (!decoded) {
+                result.skippedMalformed += 1;
+                continue;
+              }
               const wallet = walletByAddress.get(decoded.to.toLowerCase());
               if (!wallet) continue;
 
@@ -386,8 +431,9 @@ export class ManagedIndexer {
         }
 
         if (rows.length > 0) {
-          const inserted = await this.deps.deposits.insertManyIgnoreDuplicates(rows);
-          result.depositsInserted += Number(inserted) || 0;
+          const { inserted, skipped } = await this.insertRows(network, rows);
+          result.depositsInserted += inserted;
+          result.skippedRows += skipped;
         }
         await this.deps.indexerState.upsert({ network, lastScannedBlock: chunkTo });
         result.scannedTo = chunkTo;
@@ -405,7 +451,9 @@ export class ManagedIndexer {
         from,
         head,
         logs: result.logs,
+        skippedMalformed: result.skippedMalformed,
         deposits: result.depositsInserted,
+        skippedRows: result.skippedRows,
         tokens: result.tokensDiscovered,
       });
     } catch (err) {
@@ -433,6 +481,51 @@ export class ManagedIndexer {
     result.dirtyPairs = dirty.size;
     await this.afterScan(network, dirty);
     return result;
+  }
+
+  /**
+   * Inserts a chunk's rows. A transient store error (connection, deadlock)
+   * propagates so the chunk is retried after backoff. Any other error is a
+   * property of the rows (SR-02 defence in depth): the chunk is retried
+   * row-by-row, offending rows are logged and skipped, and the chunk still
+   * advances `last_scanned_block`.
+   */
+  private async insertRows(
+    network: Network,
+    rows: DepositInsert[]
+  ): Promise<{ inserted: number; skipped: number }> {
+    try {
+      const n = await this.deps.deposits.insertManyIgnoreDuplicates(rows);
+      return { inserted: Number(n) || 0, skipped: 0 };
+    } catch (err) {
+      if (isTransientStoreError(err) || rows.length === 1) throw err;
+      this.logger.warn("deposit chunk insert failed; retrying row-by-row", {
+        network,
+        rows: rows.length,
+        error: errorMessage(err),
+      });
+    }
+    let inserted = 0;
+    let skipped = 0;
+    for (const row of rows) {
+      try {
+        inserted += Number(await this.deps.deposits.insertManyIgnoreDuplicates([row])) || 0;
+      } catch (err) {
+        if (isTransientStoreError(err)) throw err;
+        skipped += 1;
+        this.logger.error("skipping deposit row the store rejected", {
+          network,
+          walletId: row.walletId,
+          asset: row.asset,
+          txHash: row.txHash,
+          logIndex: row.logIndex,
+          blockNumber: row.blockNumber,
+          amountLength: row.amountWei.length,
+          error: errorMessage(err),
+        });
+      }
+    }
+    return { inserted, skipped };
   }
 
   /** Dirty refresh, then the throttled full refresh and master refresh. */

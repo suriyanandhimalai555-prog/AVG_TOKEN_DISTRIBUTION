@@ -9,6 +9,7 @@
  * before lib/postgres is imported.
  */
 import { randomBytes, randomUUID } from "crypto";
+import { HDNodeWallet, Mnemonic } from "ethers";
 import express from "express";
 import session from "express-session";
 import { Client } from "pg";
@@ -25,17 +26,29 @@ vi.hoisted(() => {
   delete process.env.MANAGED_WALLETS_ENABLED;
   delete process.env.WALLET_ENCRYPTION_KEY;
   delete process.env.MANAGED_VIEW_RATE_LIMIT_PER_MIN;
+  // No RPC in this suite: a transfer that reaches the planner answers 503
+  // RPC_UNAVAILABLE, which the idempotency cases rely on being deterministic.
+  delete process.env.BSC_TESTNET_RPC_URL;
+  delete process.env.ALCHEMY_RPC_URL;
+  delete process.env.FALLBACK_RPC_1;
+  delete process.env.FALLBACK_RPC_2;
   process.env.FRONTEND_URL = "https://app.example.test";
 });
 
 import { hashPassword } from "../../src/lib/password";
 import { mountManagedWallets } from "../../src/managed";
 
-const HARDHAT_MNEMONIC = "test test test test test test test test test test test junk";
-const HARDHAT_ACCOUNT_0 = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266";
-const HARDHAT_ACCOUNT_1 = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8";
-const HARDHAT_ACCOUNT_2 = "0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC";
-const HARDHAT_ACCOUNT_3 = "0x90F79bf6EB2c4f870365E785982E1f101E93b906";
+// A fresh mnemonic per run: managed_wallets.address is globally unique, so a
+// fixed phrase (e.g. Hardhat's) collides with pools left behind by other
+// suites sharing the throwaway database. Expected addresses are derived here
+// with ethers directly (m/44'/60'/0'/0/i), independently of src/managed/derive.
+const TEST_MNEMONIC = Mnemonic.entropyToPhrase(randomBytes(16));
+const expectedAddress = (index: number): string =>
+  HDNodeWallet.fromPhrase(TEST_MNEMONIC, undefined, `m/44'/60'/0'/0/${index}`).address;
+const ACCOUNT_0 = expectedAddress(0);
+const ACCOUNT_1 = expectedAddress(1);
+const ACCOUNT_2 = expectedAddress(2);
+const ACCOUNT_3 = expectedAddress(3);
 
 type FakeUser = Express.User | null;
 
@@ -155,16 +168,92 @@ describe("feature flag and guards", () => {
     expect(pools.status).toBe(503);
     expect(pools.body.code).toBe("KEY_VAULT_UNAVAILABLE");
   });
+
+  describe("SR-01: non-GET requests must be JSON and not cross-site", () => {
+    it("urlencoded POST /tokens → 415 UNSUPPORTED_MEDIA_TYPE", async () => {
+      process.env.MANAGED_WALLETS_ENABLED = "true";
+      const app = buildApp(() => adminUser(randomUUID()));
+      const res = await request(app)
+        .post("/api/admin/managed/tokens")
+        .type("form")
+        .send("network=bscMainnet&tokenAddress=0x0000000000000000000000000000000000000001");
+      expect(res.status).toBe(415);
+      expect(res.body).toEqual({ error: "Content-Type must be application/json", code: "UNSUPPORTED_MEDIA_TYPE" });
+    });
+
+    it("bodiless POST /indexer/run (no Content-Type) → 415", async () => {
+      process.env.MANAGED_WALLETS_ENABLED = "true";
+      const app = buildApp(() => adminUser(randomUUID()));
+      const res = await request(app).post("/api/admin/managed/indexer/run");
+      expect(res.status).toBe(415);
+      expect(res.body.code).toBe("UNSUPPORTED_MEDIA_TYPE");
+    });
+
+    it("JSON POST with Sec-Fetch-Site: cross-site → 403 CROSS_SITE_REQUEST", async () => {
+      process.env.MANAGED_WALLETS_ENABLED = "true";
+      const app = buildApp(() => adminUser(randomUUID()));
+      const res = await request(app)
+        .post("/api/admin/managed/tokens")
+        .set("Sec-Fetch-Site", "cross-site")
+        .send({ network: "bscMainnet", tokenAddress: "0x0000000000000000000000000000000000000001" });
+      expect(res.status).toBe(403);
+      expect(res.body.code).toBe("CROSS_SITE_REQUEST");
+    });
+
+    it("normal JSON POST passes the guard (reaches the key-vault guard: 503)", async () => {
+      process.env.MANAGED_WALLETS_ENABLED = "true";
+      delete process.env.WALLET_ENCRYPTION_KEY;
+      const app = buildApp(() => adminUser(randomUUID()));
+      for (const site of [undefined, "same-origin", "same-site", "none"]) {
+        let req = request(app).post("/api/admin/managed/tokens");
+        if (site !== undefined) req = req.set("Sec-Fetch-Site", site);
+        const res = await req.send({ network: "bscMainnet", tokenAddress: "0x0000000000000000000000000000000000000001" });
+        expect(res.status).toBe(503);
+        expect(res.body.code).toBe("KEY_VAULT_UNAVAILABLE");
+      }
+    });
+
+    it("GET is untouched by the guard even with a form content type", async () => {
+      process.env.MANAGED_WALLETS_ENABLED = "true";
+      const app = buildApp(() => adminUser(randomUUID()));
+      const res = await request(app)
+        .get("/api/admin/managed/health")
+        .set("Content-Type", "application/x-www-form-urlencoded")
+        .set("Sec-Fetch-Site", "cross-site");
+      expect(res.status).toBe(200);
+      expect(res.body.enabled).toBe(true);
+    });
+
+    it("the public view router carries the same guard for any future non-GET route", async () => {
+      process.env.MANAGED_WALLETS_ENABLED = "true";
+      const app = buildApp(() => null);
+      const res = await request(app).post(`/api/view/${"a".repeat(64)}`).type("form").send("x=1");
+      expect(res.status).toBe(415);
+      expect(res.body.code).toBe("UNSUPPORTED_MEDIA_TYPE");
+    });
+  });
 });
 
 describe.skipIf(!dbAvailable)("against the throwaway database", () => {
   const PASSWORD = "correct horse battery staple";
   const adminId = randomUUID();
+  const otherAdminId = randomUUID();
   const db = new Client({ connectionString: TEST_DB_URL });
   let agent: ReturnType<typeof request.agent>;
   let poolId = "";
   let walletId = "";
   let viewToken = "";
+  /** managed_tokens rows inserted by this suite; removed in afterAll as a safety net. */
+  const insertedTokenIds: string[] = [];
+
+  async function insertAdmin(id: string): Promise<void> {
+    const salt = randomBytes(16).toString("hex");
+    await db.query(
+      `INSERT INTO users (id, email, name, password_hash, password_salt, role)
+       VALUES ($1, $2, 'API Test Admin', $3, $4, 'ADMIN')`,
+      [id, `api-test-${id}@example.test`, hashPassword(PASSWORD, salt), salt]
+    );
+  }
 
   beforeAll(async () => {
     process.env.MANAGED_WALLETS_ENABLED = "true";
@@ -185,12 +274,8 @@ describe.skipIf(!dbAvailable)("against the throwaway database", () => {
         updated_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
       )
     `);
-    const salt = randomBytes(16).toString("hex");
-    await db.query(
-      `INSERT INTO users (id, email, name, password_hash, password_salt, role)
-       VALUES ($1, $2, 'API Test Admin', $3, $4, 'ADMIN')`,
-      [adminId, `api-test-${adminId}@example.test`, hashPassword(PASSWORD, salt), salt]
-    );
+    await insertAdmin(adminId);
+    await insertAdmin(otherAdminId);
 
     agent = request.agent(buildApp(() => adminUser(adminId)));
   });
@@ -200,8 +285,11 @@ describe.skipIf(!dbAvailable)("against the throwaway database", () => {
       await db.query("DELETE FROM managed_audits WHERE pool_id = $1", [poolId]);
       await db.query("DELETE FROM managed_pools WHERE id = $1", [poolId]);
     }
-    await db.query("DELETE FROM managed_audits WHERE user_id = $1", [adminId]);
-    await db.query("DELETE FROM users WHERE id = $1", [adminId]);
+    if (insertedTokenIds.length > 0) {
+      await db.query("DELETE FROM managed_tokens WHERE id = ANY($1::uuid[])", [insertedTokenIds]);
+    }
+    await db.query("DELETE FROM managed_audits WHERE user_id = ANY($1::text[])", [[adminId, otherAdminId]]);
+    await db.query("DELETE FROM users WHERE id = ANY($1::text[])", [[adminId, otherAdminId]]);
     await db.end();
     delete process.env.MANAGED_WALLETS_ENABLED;
     delete process.env.WALLET_ENCRYPTION_KEY;
@@ -245,23 +333,23 @@ describe.skipIf(!dbAvailable)("against the throwaway database", () => {
     expect(locked.body.code).toBe("TOO_MANY_ATTEMPTS");
   });
 
-  it("POST /pools imports the Hardhat mnemonic and derives account 0 as master", async () => {
+  it("POST /pools imports a mnemonic and derives account 0 as master", async () => {
     const res = await agent
       .post("/api/admin/managed/pools")
-      .send({ name: "API test pool", network: "bscTestnet", mnemonic: HARDHAT_MNEMONIC });
+      .send({ name: "API test pool", network: "bscTestnet", mnemonic: TEST_MNEMONIC });
     // Capture the id first so afterAll cleans up even if an assertion below fails.
     poolId = res.body?.pool?.id ?? "";
     expect(res.status).toBe(201);
-    expect(res.body.masterAddress).toBe(HARDHAT_ACCOUNT_0);
+    expect(res.body.masterAddress).toBe(ACCOUNT_0);
     expect(res.body.pool).toMatchObject({
       name: "API test pool",
       network: "bscTestnet",
-      masterAddress: HARDHAT_ACCOUNT_0,
+      masterAddress: ACCOUNT_0,
       status: "ACTIVE",
       nextIndex: 1,
       walletCount: 0,
     });
-    expect(JSON.stringify(res.body)).not.toContain("junk");
+    expect(JSON.stringify(res.body)).not.toContain(TEST_MNEMONIC.split(" ").slice(0, 3).join(" "));
     expect(res.body.mnemonic).toBeUndefined();
     expect(res.body.pool.mnemonic).toBeUndefined();
     expect(res.body.pool.mnemonicCiphertext).toBeUndefined();
@@ -284,21 +372,23 @@ describe.skipIf(!dbAvailable)("against the throwaway database", () => {
     expect(res.body.nextIndex).toBe(4);
     expect(res.body.created.map((w: { derivationIndex: number }) => w.derivationIndex)).toEqual([1, 2, 3]);
     expect(res.body.created.map((w: { address: string }) => w.address)).toEqual([
-      HARDHAT_ACCOUNT_1,
-      HARDHAT_ACCOUNT_2,
-      HARDHAT_ACCOUNT_3,
+      ACCOUNT_1,
+      ACCOUNT_2,
+      ACCOUNT_3,
     ]);
     walletId = res.body.created[0].id;
   });
 
-  it("GET /pools/:id/wallets lists balances and viewUrl but never viewToken", async () => {
+  it("GET /pools/:id/wallets lists balances but never viewToken or viewUrl (SR-04)", async () => {
     const res = await agent.get(`/api/admin/managed/pools/${poolId}/wallets?limit=10`);
     expect(res.status).toBe(200);
     expect(res.body.total).toBe(3);
     const first = res.body.wallets[0];
-    expect(first).toMatchObject({ derivationIndex: 1, address: HARDHAT_ACCOUNT_1, label: "member-1" });
+    expect(first).toMatchObject({ derivationIndex: 1, address: ACCOUNT_1, label: "member-1" });
     expect(first.viewToken).toBeUndefined();
-    expect(first.viewUrl).toMatch(/^https:\/\/app\.example\.test\/w\/[0-9a-f]{64}$/);
+    expect(first.viewUrl).toBeUndefined();
+    expect(JSON.stringify(res.body)).not.toMatch(/[0-9a-f]{64}/);
+    expect(JSON.stringify(res.body)).not.toContain("/w/");
     expect(first.balances[0]).toMatchObject({ asset: "native", symbol: "tBNB", balance: "0" });
 
     const search = await agent.get(`/api/admin/managed/pools/${poolId}/wallets?search=member-3`);
@@ -323,8 +413,52 @@ describe.skipIf(!dbAvailable)("against the throwaway database", () => {
     const lines = res.text.trim().split(/\r?\n/);
     expect(lines[0]).toBe("index,address,label,holder_name,holder_email,status,tBNB");
     expect(lines).toHaveLength(4);
-    expect(lines[1]).toBe(`1,${HARDHAT_ACCOUNT_1},member-1,,,ACTIVE,0`);
+    expect(lines[1]).toBe(`1,${ACCOUNT_1},member-1,,,ACTIVE,0`);
     expect(res.text).not.toContain(viewToken);
+  });
+
+  it("SR-07: token symbol/name are sanitised and colliding CSV headers are disambiguated", async () => {
+    // Two visible testnet tokens: one spoofing the native symbol with bidi and
+    // control characters, one with an over-long symbol and name.
+    const spoofId = randomUUID();
+    const longId = randomUUID();
+    const spoofAddress = "0x00000000000000000000000000000000000000aa";
+    const longAddress = "0x00000000000000000000000000000000000000bb";
+    const bidi = "\u202E"; // RIGHT-TO-LEFT OVERRIDE
+    // C0 controls (U+0001, U+0007; Postgres rejects only NUL), a zero-width space
+    // (U+200B) and a bidi isolate (U+2066) hidden inside "tBNB".
+    const spoofSymbol = `${bidi}t\u0001B\u200BN\u0007B\u2066`;
+    const spoofName = `Claim\r\nat  evil${bidi}.example\u000B`;
+    const longSymbol = "S".repeat(40);
+    const longName = "N".repeat(100);
+    insertedTokenIds.push(spoofId, longId);
+    await db.query(
+      `INSERT INTO managed_tokens (id, network, token_address, symbol, name, decimals, source, hidden)
+       VALUES ($1, 'bscTestnet', $2, $3, $4, 18, 'DISCOVERED', FALSE),
+              ($5, 'bscTestnet', $6, $7, $8, 6, 'DISCOVERED', FALSE)`,
+      [spoofId, spoofAddress, spoofSymbol, spoofName, longId, longAddress, longSymbol, longName]
+    );
+    try {
+      const list = await agent.get("/api/admin/managed/tokens?network=bscTestnet");
+      expect(list.status).toBe(200);
+      const byId = new Map<string, { symbol: string; name: string }>(
+        list.body.tokens.map((t: { id: string; symbol: string; name: string }) => [t.id, t])
+      );
+      expect(byId.get(spoofId)).toMatchObject({ symbol: "tBNB", name: "Claim at evil.example" });
+      expect(byId.get(longId)).toMatchObject({ symbol: "S".repeat(24), name: "N".repeat(64) });
+      const serialised = JSON.stringify(list.body);
+      expect(serialised).not.toMatch(/[\u0000-\u001f\u007f\u200b\u202a-\u202e\u2066-\u2069]/);
+
+      const csv = await agent.get(`/api/admin/managed/export/pools/${poolId}.csv`);
+      expect(csv.status).toBe(200);
+      const header = csv.text.split(/\r?\n/)[0].split(",");
+      expect(header.slice(0, 7)).toEqual(["index", "address", "label", "holder_name", "holder_email", "status", "tBNB"]);
+      // Token column order follows the DB collation of the raw symbol; compare as a set.
+      expect(header.slice(7).sort()).toEqual([`tBNB (${spoofAddress.slice(0, 10)})`, "S".repeat(24)].sort());
+      expect(csv.text).not.toContain(bidi);
+    } finally {
+      await db.query("DELETE FROM managed_tokens WHERE id = ANY($1::uuid[])", [[spoofId, longId]]);
+    }
   });
 
   it("GET /api/view/:token returns the public shape only", async () => {
@@ -336,7 +470,7 @@ describe.skipIf(!dbAvailable)("against the throwaway database", () => {
     );
     expect(res.body).toMatchObject({
       label: "member-1",
-      address: HARDHAT_ACCOUNT_1,
+      address: ACCOUNT_1,
       network: "bscTestnet",
       native: { symbol: "tBNB", balanceWei: "0", balance: "0" },
       tokens: [],
@@ -395,5 +529,110 @@ describe.skipIf(!dbAvailable)("against the throwaway database", () => {
     const res = await agent.get(`/api/admin/managed/transfers?poolId=${poolId}`);
     expect(res.status).toBe(200);
     expect(res.body).toEqual({ jobs: [], total: 0, byStatus: {} });
+  });
+
+  describe("SR-08: idempotency keys are scoped per user and a reused key must match", () => {
+    const clientKey = `api-idem-${randomUUID()}`;
+    const amountWei = "1000000000000000"; // 0.001 tBNB
+    let seededJobId = "";
+
+    beforeAll(async () => {
+      // Seed the job the way the service persists it: `${userId}:${clientKey}`.
+      seededJobId = randomUUID();
+      await db.query(
+        `INSERT INTO managed_transfers
+           (id, pool_id, wallet_id, to_address, asset, amount_wei, sweep_all, status, idempotency_key, requested_by)
+         VALUES ($1, $2, $3, $4, 'native', $5, FALSE, 'PENDING', $6, $7)`,
+        [seededJobId, poolId, walletId, ACCOUNT_0, amountWei, `${adminId}:${clientKey}`, adminId]
+      );
+      const ok = await agent.post("/api/admin/managed/reauth").send({ password: PASSWORD });
+      expect(ok.status).toBe(200);
+    });
+
+    afterAll(async () => {
+      await db.query("DELETE FROM managed_transfers WHERE wallet_id = $1", [walletId]);
+    });
+
+    it("same key, same request → 200 with the existing job and no new row", async () => {
+      const res = await agent.post("/api/admin/managed/transfers").send({
+        walletId,
+        toAddress: ACCOUNT_0.toLowerCase(),
+        asset: "native",
+        amount: "0.001",
+        idempotencyKey: clientKey,
+      });
+      expect(res.status).toBe(200);
+      expect(res.body.job.id).toBe(seededJobId);
+      const rows = await db.query("SELECT COUNT(*)::int AS n FROM managed_transfers WHERE wallet_id = $1", [walletId]);
+      expect(rows.rows[0].n).toBe(1);
+    });
+
+    it("same key, different toAddress / amount / sweepAll → 409 IDEMPOTENCY_MISMATCH", async () => {
+      const base = { walletId, toAddress: ACCOUNT_0, asset: "native", amount: "0.001", idempotencyKey: clientKey };
+      for (const variant of [
+        { ...base, toAddress: ACCOUNT_2 },
+        { ...base, amount: "0.002" },
+        { ...base, amount: undefined, sweepAll: true },
+      ]) {
+        const res = await agent.post("/api/admin/managed/transfers").send(variant);
+        expect(res.status).toBe(409);
+        expect(res.body.code).toBe("IDEMPOTENCY_MISMATCH");
+      }
+      const rows = await db.query("SELECT COUNT(*)::int AS n FROM managed_transfers WHERE wallet_id = $1", [walletId]);
+      expect(rows.rows[0].n).toBe(1);
+    });
+
+    it("the same client key from another admin is a different key", async () => {
+      const other = request.agent(buildApp(() => adminUser(otherAdminId)));
+      const ok = await other.post("/api/admin/managed/reauth").send({ password: PASSWORD });
+      expect(ok.status).toBe(200);
+
+      // Not a hit on admin A's job: it falls through to the planner, which
+      // has no RPC in this suite and answers 503 instead of 200/409.
+      const res = await other.post("/api/admin/managed/transfers").send({
+        walletId,
+        toAddress: ACCOUNT_2,
+        asset: "native",
+        amount: "5",
+        idempotencyKey: clientKey,
+      });
+      expect(res.status).toBe(503);
+      expect(res.body.code).toBe("RPC_UNAVAILABLE");
+
+      const rows = await db.query("SELECT idempotency_key FROM managed_transfers WHERE wallet_id = $1", [walletId]);
+      expect(rows.rows.map((r) => r.idempotency_key)).toEqual([`${adminId}:${clientKey}`]);
+    });
+
+    it("sweep entries are stored as `${userId}:${key}:${walletId}:${asset}` and a repeat adds nothing", async () => {
+      const key = `api-sweep-${randomUUID()}`;
+      // Give the wallet a native balance so the sweep has one candidate.
+      await db.query(
+        `INSERT INTO managed_balances (wallet_id, asset, balance_wei, block_number, updated_at)
+         VALUES ($1, 'native', 1, 1, NOW())
+         ON CONFLICT (wallet_id, asset) DO UPDATE SET balance_wei = 1, block_number = 1, updated_at = NOW()`,
+        [walletId]
+      );
+      try {
+        const first = await agent
+          .post("/api/admin/managed/transfers/sweep")
+          .send({ poolId, walletIds: [walletId], assets: ["native"], idempotencyKey: key });
+        expect(first.status).toBe(201);
+        expect(first.body.jobs).toBe(1);
+
+        const again = await agent
+          .post("/api/admin/managed/transfers/sweep")
+          .send({ poolId, walletIds: [walletId], assets: ["native"], idempotencyKey: key });
+        expect(again.status).toBe(201);
+        expect(again.body.jobs).toBe(0);
+
+        const rows = await db.query(
+          "SELECT idempotency_key FROM managed_transfers WHERE wallet_id = $1 AND sweep_all = TRUE",
+          [walletId]
+        );
+        expect(rows.rows.map((r) => r.idempotency_key)).toEqual([`${adminId}:${key}:${walletId}:native`]);
+      } finally {
+        await db.query("DELETE FROM managed_balances WHERE wallet_id = $1", [walletId]);
+      }
+    });
   });
 });

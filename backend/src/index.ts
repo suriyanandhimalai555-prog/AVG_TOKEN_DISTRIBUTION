@@ -319,11 +319,23 @@ async function start(): Promise<void> {
       `[server] ${signal} received. Starting graceful shutdown...`
     );
 
-    void stopManagedWorkers();
+    // Let the managed-wallet workers finish their current job (bounded to
+    // 10 s) before the HTTP server closes; the 20 s force-exit below is the
+    // outer bound. Never rejects: a stop failure is logged and shutdown goes on.
+    const workersStopped = Promise.race([
+      stopManagedWorkers().catch((err: Error) => {
+        console.error("[managed] worker stop error:", err.message);
+      }),
+      new Promise<void>((resolve) => {
+        setTimeout(resolve, 10_000).unref();
+      }),
+    ]);
 
-    server.close(() => {
-      console.log("[server] HTTP server closed.");
-      process.exit(0);
+    void workersStopped.then(() => {
+      server.close(() => {
+        console.log("[server] HTTP server closed.");
+        process.exit(0);
+      });
     });
 
     // SSE progress streams and idle keep-alive sockets never finish on

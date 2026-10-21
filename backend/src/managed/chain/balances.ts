@@ -25,7 +25,7 @@ import type {
   TokensPort,
   WalletsPort,
 } from "./ports";
-import { consoleLogger, systemClock } from "./ports";
+import { systemClock } from "./ports";
 
 /** A (wallet, asset) pair whose balance must be re-read. */
 export interface DirtyPair {
@@ -48,7 +48,8 @@ export interface BalanceServiceDeps {
   tokens: TokensPort;
   providerFor: (network: Network) => ChainReader;
   clock?: ClockPort;
-  logger?: LoggerPort;
+  /** Required: a redacting logger (SR-09). */
+  logger: LoggerPort;
 }
 
 export interface BalanceServiceOptions {
@@ -72,7 +73,7 @@ export class BalanceService implements BalanceRefresher {
     private readonly options: BalanceServiceOptions = balanceOptionsFromEnv()
   ) {
     this.clock = deps.clock ?? systemClock;
-    this.logger = deps.logger ?? consoleLogger;
+    this.logger = deps.logger;
   }
 
   /** Re-reads the given pairs and upserts them. Duplicates are collapsed. */

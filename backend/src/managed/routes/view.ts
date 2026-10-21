@@ -2,9 +2,14 @@
  * /api/view/:viewToken — public holder page data (API.md). No auth, rate
  * limited per IP. Never includes pool id, pool name, derivation index, other
  * wallets, hidden tokens, or any admin field.
+ *
+ * This router is GET-only today. The SR-01 JSON/cross-site guard is still
+ * mounted so that any non-GET route added here later is covered without a
+ * separate change (GET passes through it untouched).
  */
 import { Request, Response, Router } from "express";
 import { explorerTxUrl } from "../chain/rpc";
+import { jsonOnlyGuard } from "../middleware/jsonOnly";
 import { createViewRateLimit } from "../middleware/viewRateLimit";
 import { managedErrorHandler } from "../middleware/notMigrated";
 import { balances } from "../models/balances";
@@ -99,6 +104,7 @@ async function handleView(req: Request, res: Response): Promise<void> {
 export function createViewRouter(): Router {
   const router = Router();
   router.use(createViewRateLimit());
+  router.use(jsonOnlyGuard);
   router.get("/:viewToken", (req, res, next) => {
     handleView(req, res).catch(next);
   });

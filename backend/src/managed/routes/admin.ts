@@ -1,6 +1,7 @@
 /**
  * /api/admin/managed — admin routes (API.md). Guard order on every route:
- * requireAdmin → (feature flag: router not mounted at all when off) →
+ * requireAdmin → jsonOnlyGuard (non-GET: JSON content type, not cross-site;
+ * SR-01) → (feature flag: router not mounted at all when off) →
  * keyVaultGuard (except GET /health) → requireRecentReauth on sensitive routes.
  */
 import { NextFunction, Request, RequestHandler, Response, Router } from "express";
@@ -11,6 +12,7 @@ import { User } from "../../models/User";
 import { isKeyVaultAvailable } from "../keyVault";
 import { maxWalletsPerPool } from "../models/pools";
 import { isIndexerEnabled } from "../middleware/featureFlag";
+import { jsonOnlyGuard } from "../middleware/jsonOnly";
 import { keyVaultGuard } from "../middleware/keyVaultGuard";
 import { isNotMigratedError, managedErrorHandler } from "../middleware/notMigrated";
 import {
@@ -79,6 +81,8 @@ async function migrated(): Promise<boolean> {
 export function createAdminRouter(): Router {
   const router = Router();
   router.use(requireAdmin);
+  // SR-01: every state-changing request must be JSON and not cross-site.
+  router.use(jsonOnlyGuard);
 
   // ─── Health (answers even without the key vault) ────────────────────────────
 

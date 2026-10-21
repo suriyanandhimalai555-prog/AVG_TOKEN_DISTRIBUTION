@@ -232,6 +232,47 @@ export async function planTransfer(body: PlanTransferRequest): Promise<PlanTrans
   return { plan: await computePlan(pool, wallet, req) };
 }
 
+// ─── Idempotency (SR-08) ──────────────────────────────────────────────────────
+//
+// Client keys are scoped per requesting user so two admins can never collide,
+// and a plain-transfer key can never collide with a sweep entry (which carries
+// an extra `:walletId:asset` suffix). The scoped form is what is persisted in
+// `managed_transfers.idempotency_key`.
+
+/** Persisted key for a single transfer: `${userId}:${clientKey}`. */
+export function transferIdempotencyKey(userId: string, clientKey: string): string {
+  return `${userId}:${clientKey}`;
+}
+
+/** Persisted key for one sweep entry: `${userId}:${clientKey}:${walletId}:${asset}`. */
+export function sweepIdempotencyKey(userId: string, clientKey: string, walletId: string, asset: string): string {
+  return `${userId}:${clientKey}:${walletId}:${asset}`;
+}
+
+/**
+ * 409 IDEMPOTENCY_MISMATCH when a key is reused for a different request, so a
+ * reused key can never silently return a job that moves other funds.
+ */
+function assertIdempotentMatch(
+  existing: TransferRecord,
+  req: ParsedPlanRequest,
+  amountWei: bigint | undefined
+): void {
+  const differences: string[] = [];
+  if (existing.walletId !== req.walletId) differences.push("walletId");
+  if (existing.toAddress.toLowerCase() !== req.toAddress.toLowerCase()) differences.push("toAddress");
+  if (existing.asset.toLowerCase() !== req.asset.toLowerCase()) differences.push("asset");
+  if (existing.sweepAll !== req.sweepAll) differences.push("sweepAll");
+  const requestedWei = req.sweepAll ? "0" : (amountWei ?? 0n).toString();
+  if (!req.sweepAll && existing.amountWei !== requestedWei) differences.push("amount");
+  if (differences.length > 0) {
+    throw conflict(
+      "IDEMPOTENCY_MISMATCH",
+      `idempotencyKey was already used for a different request (${differences.join(", ")} differ)`
+    );
+  }
+}
+
 // ─── Create ───────────────────────────────────────────────────────────────────
 
 export async function createTransfer(
@@ -239,7 +280,8 @@ export async function createTransfer(
   body: CreateTransferRequest
 ): Promise<{ job: TransferJob; created: boolean }> {
   const req = parsePlanRequest(body);
-  const idempotencyKey = requireString(body?.idempotencyKey, "idempotencyKey", 200);
+  const clientKey = requireString(body?.idempotencyKey, "idempotencyKey", 200);
+  const idempotencyKey = transferIdempotencyKey(userId, clientKey);
   const { wallet, pool } = await loadTarget(req.walletId);
 
   if (pool.status !== "ACTIVE") throw conflict("POOL_ARCHIVED", "Pool is archived");
@@ -248,6 +290,8 @@ export async function createTransfer(
   const existing = await transfers.findByIdempotencyKey(idempotencyKey);
   const meta = await tokenMetaForNetwork(pool.network);
   if (existing) {
+    const decimals = assetMeta(pool.network, req.asset, meta).decimals;
+    assertIdempotentMatch(existing, req, req.sweepAll ? undefined : toAmountWei(req.amount, decimals));
     return { job: toJob(pool.network, existing, meta), created: false };
   }
 
@@ -264,6 +308,12 @@ export async function createTransfer(
     idempotencyKey,
     requestedBy: userId,
   });
+
+  // Lost the insert race to a concurrent request with the same key: apply the
+  // same mismatch rule to the row that won.
+  if (!result.created) {
+    assertIdempotentMatch(result.job, req, req.sweepAll ? undefined : BigInt(planned.amountWei));
+  }
 
   if (result.created) {
     await recordManagedAudit({
@@ -289,7 +339,7 @@ export async function createTransfer(
 
 export async function sweep(userId: string, body: SweepRequest): Promise<SweepResponse> {
   const poolId = requireUuid(body?.poolId, "poolId");
-  const idempotencyKey = requireString(body?.idempotencyKey, "idempotencyKey", 200);
+  const clientKey = requireString(body?.idempotencyKey, "idempotencyKey", 200);
 
   let walletIds: string[] | undefined;
   if (body?.walletIds !== "ALL") {
@@ -331,7 +381,7 @@ export async function sweep(userId: string, body: SweepRequest): Promise<SweepRe
       asset: c.asset,
       amountWei: "0",
       sweepAll: true,
-      idempotencyKey: `${idempotencyKey}:${c.walletId}:${c.asset}`,
+      idempotencyKey: sweepIdempotencyKey(userId, clientKey, c.walletId, c.asset),
       requestedBy: userId,
     }));
 

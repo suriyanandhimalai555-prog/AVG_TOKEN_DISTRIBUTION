@@ -15,15 +15,17 @@ import type {
   UpdateTokenRequest,
   UpdateTokenResponse,
 } from "../types";
-import { parseNetwork, requireAddress } from "./common";
+import { parseNetwork, requireAddress, sanitizeToken } from "./common";
 import { ManagedApiError, badRequest, conflict, notFound, validation } from "./errors";
 
+/** Token metadata is untrusted (SR-07): every response goes through sanitizeToken. */
 export async function listTokens(query: ListTokensQuery): Promise<ListTokensResponse> {
   const includeHidden = query.includeHidden === true;
-  if (query.network !== undefined) {
-    return { tokens: await tokens.listByNetwork(parseNetwork(query.network), includeHidden) };
-  }
-  return { tokens: await tokens.listAll(includeHidden) };
+  const list =
+    query.network !== undefined
+      ? await tokens.listByNetwork(parseNetwork(query.network), includeHidden)
+      : await tokens.listAll(includeHidden);
+  return { tokens: list.map(sanitizeToken) };
 }
 
 export async function trackToken(
@@ -51,14 +53,15 @@ export async function trackToken(
 
   const meta = await fetchTokenMetadata(resilientProvider(network), tokenAddress);
   const result = await tokens.insertTracked({ network, tokenAddress, ...meta });
+  const token = sanitizeToken(result.token);
 
   await recordManagedAudit({
     userId,
     action: "TOKEN_TRACKED",
-    details: { network, tokenAddress: result.token.tokenAddress, symbol: result.token.symbol, promoted: !result.created },
+    details: { network, tokenAddress: token.tokenAddress, symbol: token.symbol, promoted: !result.created },
   });
 
-  return { response: { token: result.token }, created: result.created };
+  return { response: { token }, created: result.created };
 }
 
 export async function setTokenHidden(
@@ -77,5 +80,5 @@ export async function setTokenHidden(
     details: { tokenId: updated.id, network: updated.network, tokenAddress: updated.tokenAddress },
   });
 
-  return { token: updated };
+  return { token: sanitizeToken(updated) };
 }

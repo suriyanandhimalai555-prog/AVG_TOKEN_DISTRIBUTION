@@ -5,17 +5,30 @@
  *   load pool + wallet → restart safety (stored hashes first) → refuse archived
  *   pool / disabled wallet / too many attempts → decrypt seed → derive master
  *   (index 0) and child (derivation index) → fresh balances → estimateGas →
- *   planner → FUNDING_GAS (master top-up, hash stored right after broadcast,
- *   1 confirmation) → SENDING (child transfer, hash stored right after
- *   broadcast, 1 confirmation) → CONFIRMED | FAILED{code}.
+ *   planner → FUNDING_GAS (master top-up: hash stored BEFORE broadcast,
+ *   1 confirmation) → SENDING (child transfer: hash stored BEFORE broadcast,
+ *   1 confirmation) → CONFIRMED | FAILED{code}.
  *
- * The mnemonic lives in one local inside `deriveSigners` and is never logged.
+ * Double-send safety (SR-03): the hash of the signed transaction is
+ * deterministic, so it is persisted before `broadcastTransaction`. An ambiguous
+ * broadcast failure (timeout, network error, "already known") keeps the hash
+ * and fails the job as TIMEOUT; a retry then observes the chain first. After a
+ * receipt timeout the mempool decides: a tx still pending for the address
+ * keeps TIMEOUT, no pending tx and no receipt means the tx was dropped and the
+ * job is re-signed with the same, still free, nonce.
+ *
+ * Keys (SR-06): the mnemonic lives in one local inside `deriveSigners`; the
+ * signers it returns are plain `Wallet`s holding a private key only (an
+ * `HDNodeWallet` child would carry the whole pool mnemonic). Nothing in this
+ * file logs a signer, a signed transaction or a full ethers error message
+ * (SR-05: only `code` + `shortMessage`, truncated).
+ *
  * Signers are not connected to a provider: transactions are signed offline with
  * an explicit nonce (getTransactionCount(addr, "pending")) and broadcast through
  * the provider, the same pattern as scripts/distribute.ts.
  */
 
-import { HDNodeWallet, Transaction } from "ethers";
+import { HDNodeWallet, Transaction, Wallet } from "ethers";
 import { NATIVE_ASSET } from "../types";
 import type { ManagedAuditAction, Network, TransferFailureCode } from "../types";
 import type { BalanceRefresher, DirtyPair } from "./balances";
@@ -36,8 +49,8 @@ import type {
   WalletRow,
   WalletsPort,
 } from "./ports";
-import { consoleLogger, systemClock } from "./ports";
-import { chainIdFor, resilientProvider } from "./rpc";
+import { systemClock } from "./ports";
+import { chainIdFor, isRetryableRpcError, resilientProvider, shortRpcError } from "./rpc";
 import {
   FALLBACK_GAS_ESTIMATE_NATIVE,
   FALLBACK_GAS_ESTIMATE_TOKEN,
@@ -61,7 +74,8 @@ export interface WorkerDeps {
   /** Override for tests; default resolveGasPrice with env bounds. */
   gasPriceFor?: (provider: ChainProvider) => Promise<bigint>;
   clock?: ClockPort;
-  logger?: LoggerPort;
+  /** Required: a redacting logger (SR-09). */
+  logger: LoggerPort;
 }
 
 export interface WorkerOptions {
@@ -105,6 +119,9 @@ export type ReceiptOutcome =
   | { kind: "reverted"; receipt: ReceiptLike }
   | { kind: "timeout" };
 
+/** ReceiptOutcome plus "gone": timed out AND no longer in the mempool (SR-03). */
+type StoredHashOutcome = ReceiptOutcome | { kind: "gone" };
+
 export interface JobOutcome {
   jobId: string;
   status: "CONFIRMED" | "FAILED";
@@ -113,9 +130,10 @@ export interface JobOutcome {
   gasTopupTxHash: string | null;
 }
 
-interface Signers {
-  master: HDNodeWallet;
-  child: HDNodeWallet;
+/** Provider-less signers holding a private key only (never an HD node). */
+export interface Signers {
+  master: Wallet;
+  child: Wallet;
 }
 
 interface TxFields {
@@ -135,9 +153,31 @@ const ALREADY_KNOWN = [
   /transaction already in (the )?pool/i,
 ];
 
+/**
+ * Short, payload-free error text for logs, `managed_transfers.error` and audit
+ * details (SR-05): ethers `code` + `shortMessage`, or the message truncated to
+ * 300 chars with long hex runs (raw signed transactions) removed. Never the
+ * full ethers message, which serialises the signed tx and the RPC payload.
+ */
 function errorMessage(err: unknown): string {
-  const msg = err instanceof Error ? err.message : String(err);
-  return msg.slice(0, 500);
+  if (err instanceof WorkerFailure) return err.message;
+  const { code, message } = shortRpcError(err);
+  return code && !message.includes(code) ? `${code}: ${message}` : message;
+}
+
+/**
+ * Derives the master (index 0) and child signers from the pool phrase as plain
+ * `Wallet`s (SR-06). `HDNodeWallet.deriveChild` copies the mnemonic reference
+ * onto every child, so HD nodes must not leave this function: the HD account is
+ * dropped on return and only the two private-key strings survive, until
+ * `processJob` returns (JS strings cannot be wiped).
+ */
+export function signersFromMnemonic(mnemonic: string, accountPath: string, derivationIndex: number): Signers {
+  const account = HDNodeWallet.fromPhrase(mnemonic, undefined, accountPath);
+  return {
+    master: new Wallet(account.deriveChild(0).privateKey),
+    child: new Wallet(account.deriveChild(derivationIndex).privateKey),
+  };
 }
 
 function sameAddress(a: string | null | undefined, b: string | null | undefined): boolean {
@@ -158,7 +198,7 @@ export class TransferWorker {
     private readonly options: WorkerOptions = workerOptionsFromEnv()
   ) {
     this.clock = deps.clock ?? systemClock;
-    this.logger = deps.logger ?? consoleLogger;
+    this.logger = deps.logger;
     this.providerFor = deps.providerFor ?? resilientProvider;
     this.gasPriceFor =
       deps.gasPriceFor ?? ((provider) => resolveGasPrice(provider, this.options.gasPriceBounds));
@@ -284,10 +324,21 @@ export class TransferWorker {
       const provider = this.providerFor(pool.network);
       const chainId = this.options.chainIdFor(pool.network);
 
-      // Restart safety: a transfer already broadcast is only ever observed.
+      // Restart safety: a transfer already broadcast (or whose broadcast was
+      // ambiguous) is observed first. After a timeout the mempool decides
+      // (SR-03): still pending → TIMEOUT with the hash kept; no pending tx and
+      // no receipt → dropped, clear the hash and re-sign with the same nonce.
       if (job.transferTxHash) {
-        const outcome = await this.awaitReceipt(provider, job.transferTxHash, this.remainingTimeout(job));
-        return await this.settle(job, pool, wallet, outcome, job.transferTxHash);
+        const hash = job.transferTxHash;
+        let outcome: StoredHashOutcome = await this.awaitReceipt(provider, hash, this.remainingTimeout(job));
+        if (outcome.kind === "timeout") outcome = await this.afterTimeout(provider, wallet.address, hash);
+        if (outcome.kind !== "gone") return await this.settle(job, pool, wallet, outcome, hash);
+        this.logger.warn("stored transfer hash is gone from the mempool; re-signing with the same nonce", {
+          jobId: job.id,
+          hash,
+        });
+        await this.deps.transfers.update(job.id, { transferTxHash: null });
+        job = { ...job, transferTxHash: null };
       }
 
       if (pool.status !== "ACTIVE") throw new WorkerFailure("POOL_ARCHIVED", "Pool is archived");
@@ -301,15 +352,24 @@ export class TransferWorker {
 
       const signers = await this.deriveSigners(pool, wallet);
 
-      // Restart safety: a top-up already broadcast is confirmed, never re-sent.
+      // Restart safety: a top-up already broadcast is confirmed, never re-sent
+      // while it can still mine (same mempool rule as the transfer).
       let topUpDone = false;
       if (job.gasTopupTxHash) {
-        const outcome = await this.awaitReceipt(provider, job.gasTopupTxHash, this.remainingTimeout(job));
+        const hash = job.gasTopupTxHash;
+        let outcome: StoredHashOutcome = await this.awaitReceipt(provider, hash, this.remainingTimeout(job));
+        if (outcome.kind === "timeout") outcome = await this.afterTimeout(provider, signers.master.address, hash);
         if (outcome.kind === "reverted") throw new WorkerFailure("REVERTED", "Gas top-up reverted");
         if (outcome.kind === "timeout") {
-          throw new WorkerFailure("TIMEOUT", "Gas top-up not mined within MANAGED_TX_TIMEOUT_MS");
+          throw new WorkerFailure("TIMEOUT", "Gas top-up not mined within MANAGED_TX_TIMEOUT_MS (hash kept)");
         }
-        topUpDone = true;
+        if (outcome.kind === "gone") {
+          this.logger.warn("stored top-up hash is gone from the mempool; re-sending the top-up", { jobId: job.id, hash });
+          await this.deps.transfers.update(job.id, { gasTopupTxHash: null });
+          job = { ...job, gasTopupTxHash: null };
+        } else {
+          topUpDone = true;
+        }
       }
 
       // Fresh balances.
@@ -379,15 +439,22 @@ export class TransferWorker {
       const topUpWei = BigInt(planned.topUpWei);
       if (topUpWei > 0n && !topUpDone) {
         await this.deps.transfers.update(job.id, { status: "FUNDING_GAS" });
-        const hash = await this.broadcast(provider, signers.master, {
-          to: childAddress,
-          value: topUpWei,
-          gasLimit: TOPUP_GAS_LIMIT,
-          gasPrice: gasPriceWei,
-          chainId,
-        });
-        await this.deps.transfers.update(job.id, { gasTopupTxHash: hash });
-        job = { ...job, gasTopupTxHash: hash, status: "FUNDING_GAS" };
+        job = { ...job, status: "FUNDING_GAS" };
+        const hash = await this.broadcast(
+          provider,
+          signers.master,
+          {
+            to: childAddress,
+            value: topUpWei,
+            gasLimit: TOPUP_GAS_LIMIT,
+            gasPrice: gasPriceWei,
+            chainId,
+          },
+          async (h) => {
+            await this.deps.transfers.update(job.id, { gasTopupTxHash: h });
+            job = { ...job, gasTopupTxHash: h };
+          }
+        );
         this.logger.info("gas top-up broadcast", { jobId: job.id, hash, topUpWei: planned.topUpWei });
         const outcome = await this.awaitReceipt(provider, hash, this.options.txTimeoutMs);
         if (outcome.kind === "reverted") throw new WorkerFailure("REVERTED", "Gas top-up reverted");
@@ -398,18 +465,25 @@ export class TransferWorker {
 
       // SENDING
       await this.deps.transfers.update(job.id, { status: "SENDING" });
+      job = { ...job, status: "SENDING" };
       const intent = planned.txs.find((t) => t.kind === "transfer");
       if (!intent) throw new WorkerFailure("UNKNOWN", "Planner produced no transfer transaction");
-      const transferHash = await this.broadcast(provider, signers.child, {
-        to: intent.to,
-        value: BigInt(intent.valueWei),
-        data: intent.data,
-        gasLimit: BigInt(planned.gasLimit),
-        gasPrice: gasPriceWei,
-        chainId,
-      });
-      await this.deps.transfers.update(job.id, { transferTxHash: transferHash });
-      job = { ...job, transferTxHash: transferHash, status: "SENDING" };
+      const transferHash = await this.broadcast(
+        provider,
+        signers.child,
+        {
+          to: intent.to,
+          value: BigInt(intent.valueWei),
+          data: intent.data,
+          gasLimit: BigInt(planned.gasLimit),
+          gasPrice: gasPriceWei,
+          chainId,
+        },
+        async (h) => {
+          await this.deps.transfers.update(job.id, { transferTxHash: h });
+          job = { ...job, transferTxHash: h };
+        }
+      );
       this.logger.info("transfer broadcast", { jobId: job.id, hash: transferHash });
       const outcome = await this.awaitReceipt(provider, transferHash, this.options.txTimeoutMs);
       return await this.settle(job, pool, wallet, outcome, transferHash);
@@ -422,7 +496,11 @@ export class TransferWorker {
 
   // ─── Steps ────────────────────────────────────────────────────────────────
 
-  /** Decrypts the seed and derives both signers. The mnemonic never leaves this frame. */
+  /**
+   * Decrypts the seed and derives both signers. The mnemonic and the HD
+   * account never leave this frame (SR-06): the returned `Wallet`s hold the
+   * two private keys only. Addresses are checked against the stored rows.
+   */
   private async deriveSigners(pool: PoolRow, wallet: WalletRow): Promise<Signers> {
     let mnemonic: string;
     try {
@@ -430,27 +508,39 @@ export class TransferWorker {
     } catch {
       throw new WorkerFailure("KEY_VAULT_UNAVAILABLE", "Could not decrypt the pool seed");
     }
-    let account: HDNodeWallet;
+    let signers: Signers;
     try {
-      account = HDNodeWallet.fromPhrase(mnemonic, undefined, pool.accountPath || DEFAULT_ACCOUNT_PATH);
+      signers = signersFromMnemonic(mnemonic, pool.accountPath || DEFAULT_ACCOUNT_PATH, wallet.derivationIndex);
     } catch {
       throw new WorkerFailure("UNKNOWN", "Decrypted seed is not a valid mnemonic");
     } finally {
       mnemonic = "";
     }
-    const master = account.deriveChild(0);
-    const child = account.deriveChild(wallet.derivationIndex);
-    if (!sameAddress(master.address, pool.masterAddress)) {
+    if (!sameAddress(signers.master.address, pool.masterAddress)) {
       throw new WorkerFailure("UNKNOWN", "Derived master address does not match the pool");
     }
-    if (!sameAddress(child.address, wallet.address)) {
+    if (!sameAddress(signers.child.address, wallet.address)) {
       throw new WorkerFailure("UNKNOWN", "Derived child address does not match the wallet");
     }
-    return { master, child };
+    return signers;
   }
 
-  /** Signs offline with a pending nonce and broadcasts. Returns the tx hash. */
-  private async broadcast(provider: ChainProvider, signer: HDNodeWallet, fields: TxFields): Promise<string> {
+  /**
+   * Signs offline with a pending nonce, persists the deterministic hash of the
+   * signed transaction through `persist` BEFORE the network call (SR-03), then
+   * broadcasts. Returns the hash.
+   *   - "already known": the node has it → return the hash.
+   *   - transient failure (timeout, network, 429): outcome unknown → keep the
+   *     stored hash and fail as TIMEOUT so the retry observes the chain first.
+   *   - definite rejection (nonce too low, insufficient funds, underpriced):
+   *     clear the stored hash and fail as BROADCAST_FAILED (retry re-signs).
+   */
+  private async broadcast(
+    provider: ChainProvider,
+    signer: Wallet,
+    fields: TxFields,
+    persist: (hash: string | null) => Promise<void>
+  ): Promise<string> {
     let signed: string;
     let expectedHash: string;
     try {
@@ -466,20 +556,86 @@ export class TransferWorker {
         gasPrice: fields.gasPrice,
       });
       expectedHash = Transaction.from(signed).hash ?? "";
+      if (!expectedHash) throw new Error("could not derive the transaction hash");
     } catch (err) {
       throw new WorkerFailure("BROADCAST_FAILED", `Could not sign transaction: ${errorMessage(err)}`);
     }
+    await persist(expectedHash);
     try {
       const res = await provider.broadcastTransaction(signed);
-      return res.hash || expectedHash;
+      if (res.hash && res.hash.toLowerCase() !== expectedHash.toLowerCase()) {
+        this.logger.warn("node returned an unexpected hash; storing the node's", {
+          expected: expectedHash,
+          returned: res.hash,
+        });
+        await persist(res.hash);
+        return res.hash;
+      }
+      return expectedHash;
     } catch (err) {
-      const msg = errorMessage(err);
-      if (expectedHash && ALREADY_KNOWN.some((re) => re.test(msg))) {
+      const { code, message } = shortRpcError(err);
+      if (ALREADY_KNOWN.some((re) => re.test(message))) {
         this.logger.warn("transaction already known to the node; continuing", { hash: expectedHash });
         return expectedHash;
       }
-      throw new WorkerFailure("BROADCAST_FAILED", msg);
+      if (isRetryableRpcError(err)) {
+        this.logger.warn("broadcast outcome unknown; hash kept for a receipt-first retry", {
+          hash: expectedHash,
+          code,
+          error: message,
+        });
+        throw new WorkerFailure("TIMEOUT", `Broadcast outcome unknown (${errorMessage(err)}); hash kept`);
+      }
+      try {
+        await persist(null);
+      } catch (clearErr) {
+        this.logger.error("could not clear the stored hash after a rejected broadcast", {
+          hash: expectedHash,
+          error: errorMessage(clearErr),
+        });
+      }
+      throw new WorkerFailure("BROADCAST_FAILED", errorMessage(err));
     }
+  }
+
+  /**
+   * After a receipt timeout for a stored hash: is the transaction still able
+   * to mine? "timeout" (keep the hash) while the address has a transaction in
+   * the mempool (pending nonce > latest nonce) or while the nonce check itself
+   * fails (never re-sign on doubt). Otherwise one last receipt read decides
+   * between a mined outcome and "gone" (dropped, nonce free again).
+   */
+  private async afterTimeout(
+    provider: ChainProvider,
+    address: string,
+    hash: string
+  ): Promise<StoredHashOutcome> {
+    let latest: number;
+    let pending: number;
+    try {
+      [latest, pending] = await Promise.all([
+        provider.getTransactionCount(address, "latest"),
+        provider.getTransactionCount(address, "pending"),
+      ]);
+    } catch (err) {
+      this.logger.warn("nonce check failed after timeout; keeping the hash", { hash, error: errorMessage(err) });
+      return { kind: "timeout" };
+    }
+    if (pending > latest) {
+      this.logger.info("transaction still pending in the mempool; keeping the hash", { hash, latest, pending });
+      return { kind: "timeout" };
+    }
+    let receipt: ReceiptLike | null = null;
+    try {
+      receipt = await provider.getTransactionReceipt(hash);
+    } catch (err) {
+      this.logger.warn("final receipt read failed after timeout; keeping the hash", { hash, error: errorMessage(err) });
+      return { kind: "timeout" };
+    }
+    if (receipt && receipt.blockNumber != null) {
+      return receipt.status === 0 ? { kind: "reverted", receipt } : { kind: "confirmed", receipt };
+    }
+    return { kind: "gone" };
   }
 
   /** Polls for a receipt until mined or the timeout elapses. */

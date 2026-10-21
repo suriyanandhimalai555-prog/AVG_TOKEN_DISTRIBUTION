@@ -100,3 +100,18 @@ describe("managedLog", () => {
     expect(error).toHaveBeenCalledWith(`[managed] worker failed ${REDACTED}`);
   });
 });
+
+describe("redact: long hex blobs (SR-05)", () => {
+  it("masks raw signed transactions and calldata of 130+ hex chars", async () => {
+    const { redactString } = await import("../../src/managed/redact");
+    const blob = "0x" + "ab".repeat(100);
+    const out = redactString(`broadcast failed for ${blob} on bsc`);
+    expect(out).not.toContain(blob);
+    expect(out).toContain("bsc");
+  });
+  it("leaves short hex such as addresses alone", async () => {
+    const { redactString } = await import("../../src/managed/redact");
+    const addr = "0x" + "ab".repeat(20);
+    expect(redactString(`to ${addr}`)).toContain(addr);
+  });
+});

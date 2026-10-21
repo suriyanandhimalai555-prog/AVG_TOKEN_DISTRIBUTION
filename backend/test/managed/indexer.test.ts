@@ -4,6 +4,7 @@ import {
   ManagedIndexer,
   TRANSFER_SIG,
   decodeTransferLog,
+  isTransientStoreError,
   padAddressTopic,
 } from "../../src/managed/chain/indexer";
 import type { IndexerOptions } from "../../src/managed/chain/indexer";
@@ -28,6 +29,7 @@ import type {
 } from "../../src/managed/chain/ports";
 import type { Network } from "../../src/managed/types";
 import fixture from "./fixtures/transferLogs.json";
+import malformedFixture from "./fixtures/malformedTransferLogs.json";
 
 // ─── Fixture → ethers-shaped logs ────────────────────────────────────────────
 
@@ -52,6 +54,9 @@ function toLogLike(raw: RawLog): LogLike {
 }
 
 const FIXTURE_LOGS: LogLike[] = (fixture.logs as RawLog[]).map(toLogLike);
+/** Transfer-signature logs to W1 that must be rejected (SR-02). */
+const MALFORMED_LOGS: LogLike[] = (malformedFixture.logs as RawLog[]).map(toLogLike);
+const ZERO_WORD = "0x" + "00".repeat(32);
 
 const NETWORK: Network = "bscTestnet";
 const W1 = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8";
@@ -72,6 +77,8 @@ class FakeProvider implements ChainReader {
   latest = 1016; // head = 1001 with 15 confirmations
   getLogsCalls: LogFilter[] = [];
   failOnBlock: number | null = null;
+  /** Extra logs the node returns on top of the fixture (malformed cases). */
+  extraLogs: LogLike[] = [];
 
   async getBlockNumber(): Promise<number> {
     return this.latest;
@@ -82,7 +89,9 @@ class FakeProvider implements ChainReader {
       throw Object.assign(new Error("429 Too Many Requests"), { code: "SERVER_ERROR" });
     }
     // Like a node: respect the block range (topic filtering is left to the indexer on purpose).
-    return FIXTURE_LOGS.filter((l) => l.blockNumber >= filter.fromBlock && l.blockNumber <= filter.toBlock);
+    return [...FIXTURE_LOGS, ...this.extraLogs].filter(
+      (l) => l.blockNumber >= filter.fromBlock && l.blockNumber <= filter.toBlock
+    );
   }
   async getBlock(blockNumber: number): Promise<{ timestamp: number } | null> {
     return { timestamp: 1_700_000_000 + blockNumber };
@@ -121,8 +130,14 @@ class FakeTokens implements TokensPort {
 class FakeDeposits implements DepositsPort {
   rows = new Map<string, DepositInsert>();
   calls = 0;
+  /** Like Postgres: any batch containing a poisoned row fails as a whole. */
+  poison = new Map<string, Error>();
   async insertManyIgnoreDuplicates(rows: DepositInsert[]): Promise<number> {
     this.calls += 1;
+    for (const r of rows) {
+      const bad = this.poison.get(`${r.txHash}:${r.logIndex}`);
+      if (bad) throw bad;
+    }
     let inserted = 0;
     for (const r of rows) {
       const key = `${r.txHash}:${r.logIndex}`;
@@ -250,13 +265,53 @@ describe("decodeTransferLog", () => {
     expect(decodeTransferLog({ ...FIXTURE_LOGS[0], data: "0xzz" })).toBeNull();
   });
 
-  it("treats empty data as zero", () => {
-    expect(decodeTransferLog({ ...FIXTURE_LOGS[0], data: "0x" })?.amountWei).toBe(0n);
+  it("SR-02: requires exactly 3 topics (ERC-721 Transfer with 4 topics is rejected)", () => {
+    const erc721 = MALFORMED_LOGS[1];
+    expect(erc721.topics).toHaveLength(4);
+    expect(decodeTransferLog(erc721)).toBeNull();
+    // A 4th topic with otherwise valid 32-byte data is rejected too.
+    expect(decodeTransferLog({ ...FIXTURE_LOGS[0], topics: [...FIXTURE_LOGS[0].topics, ZERO_WORD] })).toBeNull();
+  });
+
+  it("SR-02: requires data to be exactly one 32-byte word", () => {
+    const tooLong = MALFORMED_LOGS[0];
+    expect(tooLong.data).toHaveLength(2 + 66); // 33 bytes
+    expect(decodeTransferLog(tooLong)).toBeNull();
+    const tooShort = MALFORMED_LOGS[3];
+    expect(tooShort.data).toHaveLength(2 + 62); // 31 bytes
+    expect(decodeTransferLog(tooShort)).toBeNull();
+    expect(decodeTransferLog({ ...FIXTURE_LOGS[0], data: "0x" })).toBeNull();
+    expect(decodeTransferLog({ ...FIXTURE_LOGS[0], data: "" })).toBeNull();
+    expect(decodeTransferLog({ ...FIXTURE_LOGS[0], data: "0x" + "ff".repeat(64) })).toBeNull(); // two words
+    expect(decodeTransferLog({ ...FIXTURE_LOGS[0], data: "0x" + "0g".repeat(32) })).toBeNull(); // non-hex
+    expect(decodeTransferLog({ ...FIXTURE_LOGS[0], data: undefined as unknown as string })).toBeNull();
+    // A full 32-byte word of 0xff (2^256 − 1) is accepted: it fits NUMERIC(78,0).
+    expect(decodeTransferLog({ ...FIXTURE_LOGS[0], data: "0x" + "ff".repeat(32) })?.amountWei).toBe(2n ** 256n - 1n);
+  });
+
+  it("SR-02: skips zero amounts", () => {
+    expect(decodeTransferLog(MALFORMED_LOGS[2])).toBeNull();
+    expect(decodeTransferLog({ ...FIXTURE_LOGS[0], data: ZERO_WORD })).toBeNull();
   });
 
   it("pads addresses to 32 bytes like ethers.zeroPadValue", () => {
     expect(padAddressTopic(W1)).toBe(zeroPadValue(getAddress(W1), 32));
     expect(padAddressTopic(W1)).toBe(FIXTURE_LOGS[0].topics[2]);
+  });
+});
+
+describe("isTransientStoreError", () => {
+  it("classifies pg SQLSTATE classes and socket errors", () => {
+    expect(isTransientStoreError(Object.assign(new Error("x"), { code: "08006" }))).toBe(true);
+    expect(isTransientStoreError(Object.assign(new Error("x"), { code: "40P01" }))).toBe(true);
+    expect(isTransientStoreError(Object.assign(new Error("x"), { code: "53300" }))).toBe(true);
+    expect(isTransientStoreError(Object.assign(new Error("x"), { code: "57P01" }))).toBe(true);
+    expect(isTransientStoreError(Object.assign(new Error("x"), { code: "ECONNRESET" }))).toBe(true);
+    expect(isTransientStoreError(new Error("Connection terminated unexpectedly"))).toBe(true);
+    expect(isTransientStoreError(Object.assign(new Error("numeric field overflow"), { code: "22003" }))).toBe(false);
+    expect(isTransientStoreError(Object.assign(new Error("duplicate key"), { code: "23505" }))).toBe(false);
+    expect(isTransientStoreError(new Error("value too long"))).toBe(false);
+    expect(isTransientStoreError(null)).toBe(false);
   });
 });
 
@@ -321,6 +376,62 @@ describe("ManagedIndexer.runOnce", () => {
     expect(t.state.state?.lastScannedBlock).toBe(1001);
     expect(t.state.state?.lastRunAt).not.toBeNull();
     expect(t.state.state?.lastError).toBeNull();
+  });
+
+  it("SR-02: malformed logs to a managed wallet are counted, skipped, and never stall the scan", async () => {
+    const t = build(999);
+    t.provider.extraLogs = MALFORMED_LOGS;
+    const result = await t.indexer.runOnce(NETWORK);
+
+    expect(result.error).toBeNull();
+    expect(result.logs).toBe(4 + MALFORMED_LOGS.length);
+    expect(result.skippedMalformed).toBe(MALFORMED_LOGS.length);
+    expect(result.depositsInserted).toBe(3);
+    expect(result.skippedRows).toBe(0);
+    // Nothing from the malformed token reached the store or token discovery.
+    expect([...t.deposits.rows.values()].some((r) => r.asset === "0x3333333333333333333333333333333333333333")).toBe(false);
+    expect(t.tokens.discovered.map((d) => d.tokenAddress)).not.toContain("0x3333333333333333333333333333333333333333");
+    expect(t.state.state?.lastScannedBlock).toBe(1001);
+    expect(t.state.state?.lastError).toBeNull();
+  });
+
+  it("SR-02: one poisoned row among good rows is skipped row-by-row and the state still advances", async () => {
+    const t = build(999);
+    const poisoned = FIXTURE_LOGS[1]; // W1 ← token A, block 1000, log index 3
+    t.deposits.poison.set(
+      `${poisoned.transactionHash}:${poisoned.index}`,
+      Object.assign(new Error("numeric field overflow"), { code: "22003" })
+    );
+    const result = await t.indexer.runOnce(NETWORK);
+
+    expect(result.error).toBeNull();
+    expect(result.depositsInserted).toBe(2);
+    expect(result.skippedRows).toBe(1);
+    expect(t.deposits.rows.size).toBe(2);
+    expect(t.deposits.rows.has(`${poisoned.transactionHash}:${poisoned.index}`)).toBe(false);
+    // One failed chunk insert, then one call per row.
+    expect(t.deposits.calls).toBe(1 + 3);
+    expect(t.state.state?.lastScannedBlock).toBe(1001);
+    expect(t.state.state?.lastError).toBeNull();
+    // The good rows' dirty pairs are still refreshed.
+    expect(t.balances.refreshed).toHaveLength(1);
+
+    // The next run is not stuck behind the bad row.
+    const next = await t.indexer.runOnce(NETWORK);
+    expect(next.skippedReason).toBe("up_to_date");
+  });
+
+  it("SR-02: a transient store error still fails the chunk (retried after backoff), not row-by-row", async () => {
+    const t = build(999);
+    t.deposits.poison.set(
+      `${FIXTURE_LOGS[0].transactionHash}:${FIXTURE_LOGS[0].index}`,
+      Object.assign(new Error("connection terminated unexpectedly"), { code: "08006" })
+    );
+    const result = await t.indexer.runOnce(NETWORK);
+    expect(result.error).toContain("08006");
+    expect(t.deposits.calls).toBe(1);
+    expect(t.state.state?.lastScannedBlock).toBe(999);
+    expect(t.state.state?.lastError).toContain("connection terminated");
   });
 
   it("a duplicate run inserts nothing new", async () => {

@@ -1,7 +1,8 @@
 /**
  * Wallet orchestration (ARCHITECTURE.md §3.2): generation, listing with
  * balances, detail, assignment, view-token rotation and the CSV export.
- * The list endpoint never includes view tokens; it includes `viewUrl` only.
+ * The list endpoint never includes view tokens or view URLs (SR-04,
+ * ARCHITECTURE §5.3): the token appears only in GET /wallets/:id and on rotate.
  */
 import { recordManagedAudit } from "../audit";
 import { addressesFor } from "../derive";
@@ -21,9 +22,9 @@ import type {
   GenerateWalletsResponse,
   GetWalletResponse,
   ListWalletsQuery,
+  ListWalletsResponse,
   ManagedToken,
   ManagedWallet,
-  ManagedWalletWithBalances,
   Network,
   RotateViewTokenResponse,
   UpdateWalletRequest,
@@ -32,6 +33,7 @@ import type {
 import {
   assetMeta,
   csvCell,
+  csvAssetHeaders,
   formatAmount,
   nativeSymbol,
   optionalString,
@@ -149,12 +151,10 @@ export async function generateWallets(
   return { created, nextIndex: range.to };
 }
 
-export type ListedWallet = ManagedWalletWithBalances & { viewUrl: string };
-
 export async function listWallets(
   poolId: string,
   query: ListWalletsQuery
-): Promise<{ wallets: ListedWallet[]; total: number }> {
+): Promise<ListWalletsResponse> {
   const pool = await requirePoolRecord(poolId);
   const page = await wallets.listByPool(poolId, {
     skip: query.skip,
@@ -163,11 +163,10 @@ export async function listWallets(
   });
 
   const ids = page.wallets.map((w) => w.id);
-  const [rows, meta, lastDeposits, records] = await Promise.all([
+  const [rows, meta, lastDeposits] = await Promise.all([
     balances.listByWallets(ids),
     tokenMetaForNetwork(pool.network),
     deposits.lastDepositAtByWallets(ids),
-    wallets.findByIds(ids),
   ]);
 
   const rowsByWallet = new Map<string, BalanceRecord[]>();
@@ -176,14 +175,12 @@ export async function listWallets(
     list.push(row);
     rowsByWallet.set(row.walletId, list);
   }
-  const tokenById = new Map(records.map((r) => [r.id, r.viewToken]));
 
   return {
     wallets: page.wallets.map((w) => ({
       ...w,
       balances: balanceEntries(pool.network, rowsByWallet.get(w.id) ?? [], meta),
       lastDepositAt: lastDeposits.get(w.id) ?? null,
-      viewUrl: viewUrlFor(tokenById.get(w.id) ?? ""),
     })),
     total: page.total,
   };
@@ -302,7 +299,10 @@ export async function rotateViewToken(
 
 /**
  * CSV: index,address,label,holder_name,holder_email,status,<one column per
- * visible asset symbol>. No keys, no view tokens (API.md).
+ * visible asset symbol>. No keys, no view tokens (API.md). Symbols are
+ * sanitised by tokenMetaForNetwork; a token symbol that collides with the
+ * native symbol or another visible token gets the short token address
+ * appended so the header stays unambiguous (SR-07).
  */
 export async function exportPoolCsv(
   userId: string,
@@ -315,9 +315,10 @@ export async function exportPoolCsv(
     { asset: NATIVE_ASSET, symbol: nativeSymbol(pool.network), decimals: 18 },
     ...visibleTokens.map((t) => ({ asset: t.tokenAddress.toLowerCase(), symbol: t.symbol, decimals: t.decimals })),
   ];
+  const headers = csvAssetHeaders(assets);
 
   const lines: string[] = [
-    ["index", "address", "label", "holder_name", "holder_email", "status", ...assets.map((a) => a.symbol)]
+    ["index", "address", "label", "holder_name", "holder_email", "status", ...headers]
       .map(csvCell)
       .join(","),
   ];
@@ -353,7 +354,7 @@ export async function exportPoolCsv(
     userId,
     poolId,
     action: "EXPORT_DOWNLOADED",
-    details: { wallets: total, assets: assets.map((a) => a.symbol) },
+    details: { wallets: total, assets: headers },
   });
 
   return { filename: `pool-${poolId}.csv`, csv: `${lines.join("\r\n")}\r\n` };

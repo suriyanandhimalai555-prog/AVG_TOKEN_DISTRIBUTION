@@ -136,22 +136,75 @@ export interface AssetMeta {
   hidden: boolean;
 }
 
-/** All tokens of a network (hidden included) keyed by lowercase address. */
+// ─── Untrusted token metadata (SR-07) ────────────────────────────────────────
+//
+// `symbol` and `name` come from arbitrary contracts. Before they reach any API
+// response, CSV header or audit row: strip control characters (C0/C1), format
+// characters (bidi overrides, zero-width joiners, ...), private-use and lone
+// surrogates, line/paragraph separators; collapse whitespace; cap the length.
+
+export const SYMBOL_MAX_LENGTH = 24;
+export const NAME_MAX_LENGTH = 64;
+export const UNKNOWN_SYMBOL = "UNKNOWN";
+export const UNKNOWN_NAME = "Unknown token";
+
+const DISPLAY_STRIP_RE = /[\p{Cc}\p{Cf}\p{Co}\p{Cs}\p{Zl}\p{Zp}]/gu;
+
+/**
+ * Display-safe string: whitespace (incl. newlines, tabs, line separators)
+ * collapsed to single spaces first, then the remaining control/format
+ * characters stripped, trimmed and capped; `fallback` when nothing is left.
+ */
+export function cleanDisplay(value: unknown, maxLength: number, fallback: string): string {
+  if (typeof value !== "string") return fallback;
+  const cleaned = value.replace(/\s+/g, " ").replace(DISPLAY_STRIP_RE, "").trim().slice(0, maxLength).trim();
+  return cleaned.length > 0 ? cleaned : fallback;
+}
+
+/** A ManagedToken whose symbol/name are safe to display or export. */
+export function sanitizeToken(token: ManagedToken): ManagedToken {
+  return {
+    ...token,
+    symbol: cleanDisplay(token.symbol, SYMBOL_MAX_LENGTH, UNKNOWN_SYMBOL),
+    name: cleanDisplay(token.name, NAME_MAX_LENGTH, UNKNOWN_NAME),
+  };
+}
+
+/** All tokens of a network (hidden included) keyed by lowercase address, sanitised. */
 export async function tokenMetaForNetwork(network: Network): Promise<Map<string, ManagedToken>> {
   const map = new Map<string, ManagedToken>();
   for (const token of await tokens.listByNetwork(network, true)) {
-    map.set(token.tokenAddress.toLowerCase(), token);
+    map.set(token.tokenAddress.toLowerCase(), sanitizeToken(token));
   }
   return map;
 }
 
-/** All tokens of every network keyed by `${network}:${address}`. */
+/** All tokens of every network keyed by `${network}:${address}`, sanitised. */
 export async function tokenMetaForAllNetworks(): Promise<Map<string, ManagedToken>> {
   const map = new Map<string, ManagedToken>();
   for (const token of await tokens.listAll(true)) {
-    map.set(`${token.network}:${token.tokenAddress.toLowerCase()}`, token);
+    map.set(`${token.network}:${token.tokenAddress.toLowerCase()}`, sanitizeToken(token));
   }
   return map;
+}
+
+/**
+ * CSV column headers for a list of assets (native first). A symbol shared,
+ * case-insensitively, by two or more assets is disambiguated with the short
+ * token address: `USDT (0x12345678)`. The native column keeps its plain
+ * symbol because its identity is never ambiguous.
+ */
+export function csvAssetHeaders(assets: ReadonlyArray<{ asset: Asset; symbol: string }>): string[] {
+  const counts = new Map<string, number>();
+  for (const a of assets) {
+    const k = a.symbol.toLowerCase();
+    counts.set(k, (counts.get(k) ?? 0) + 1);
+  }
+  return assets.map((a) => {
+    if (a.asset === NATIVE_ASSET) return a.symbol;
+    if ((counts.get(a.symbol.toLowerCase()) ?? 0) <= 1) return a.symbol;
+    return `${a.symbol} (${a.asset.slice(0, 10)})`;
+  });
 }
 
 /** Display metadata for an asset; unknown tokens fall back to UNKNOWN / 18. */
@@ -168,8 +221,8 @@ export function assetMeta(
   const token = meta.get(key(lower));
   return {
     asset: lower,
-    symbol: token?.symbol ?? "UNKNOWN",
-    name: token?.name ?? "Unknown token",
+    symbol: token?.symbol ?? UNKNOWN_SYMBOL,
+    name: token?.name ?? UNKNOWN_NAME,
     decimals: token?.decimals ?? 18,
     hidden: token?.hidden ?? false,
   };

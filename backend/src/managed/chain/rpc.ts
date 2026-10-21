@@ -155,8 +155,42 @@ export async function withFallback<T>(
       }
     }
   }
-  const msg = lastError instanceof Error ? lastError.message : String(lastError);
-  throw new Error(`[managed] all RPC providers for ${network} failed: ${msg}`);
+  throw wrapExhausted(network, lastError);
+}
+
+/** Short, payload-free description of an RPC error (`shortMessage` first). */
+export function shortRpcError(err: unknown): { code: string | null; message: string } {
+  const obj = err && typeof err === "object" ? (err as Record<string, unknown>) : null;
+  const code = obj && typeof obj.code === "string" ? obj.code : null;
+  const raw =
+    obj && typeof obj.shortMessage === "string" && obj.shortMessage
+      ? obj.shortMessage
+      : err instanceof Error
+        ? err.message
+        : String(err);
+  // Never carry a raw signed transaction / long hex payload in a message.
+  const message = raw.replace(/0x[0-9a-fA-F]{130,}/g, "0x[hex-redacted]").slice(0, 300);
+  return { code, message };
+}
+
+/**
+ * The error thrown when every provider failed. Keeps `code` and `shortMessage`
+ * of the last transient error so callers can classify it (isRetryableRpcError)
+ * and log it without the full ethers message (which may embed the raw signed
+ * transaction and the RPC payload).
+ */
+function wrapExhausted(network: Network, lastError: unknown): Error {
+  const { code, message } = shortRpcError(lastError);
+  const shortMessage = `all RPC providers for ${network} failed: ${message}`;
+  const wrapped = new Error(`[managed] ${shortMessage}`) as Error & {
+    code?: string;
+    shortMessage?: string;
+    cause?: unknown;
+  };
+  wrapped.code = code ?? "NETWORK_ERROR";
+  wrapped.shortMessage = shortMessage;
+  wrapped.cause = lastError;
+  return wrapped;
 }
 
 /**
