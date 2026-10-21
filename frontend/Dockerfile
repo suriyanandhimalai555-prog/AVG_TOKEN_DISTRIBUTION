@@ -15,6 +15,10 @@ ENV VITE_API_URL=$VITE_API_URL
 
 RUN npm run build
 
+# Validate production API URL exists in generated frontend
+RUN grep -R -F 'https://api.holderforge.io' dist/ \
+    >/dev/null || \
+    (echo "ERROR: Production API URL missing from frontend build" && exit 1)
 
 # Production Stage
 FROM nginx:alpine
