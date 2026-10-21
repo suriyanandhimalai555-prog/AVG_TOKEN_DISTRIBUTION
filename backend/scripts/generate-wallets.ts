@@ -60,8 +60,10 @@ if (!isMainThread) {
   // Derive the account-level node once — m/44'/60'/0'/0
   // Each child derivation is then just 1 EC multiply (deriveChild(i))
   // vs re-deriving 4 levels from root every time.
-  const hdRoot      = ethers.HDNodeWallet.fromPhrase(mnemonic);
-  const accountNode = hdRoot.derivePath(`44'/60'/0'/0`);
+  // The path must be passed to fromPhrase: without it ethers returns the node at
+  // m/44'/60'/0'/0/0, and a relative derivePath from there yields non-standard
+  // addresses that MetaMask / Trust Wallet cannot find from the mnemonic.
+  const accountNode = ethers.HDNodeWallet.fromPhrase(mnemonic, undefined, BIP44_BASE_PATH);
 
   const lines: string[] = [];
 
