@@ -2,14 +2,9 @@ import { Router } from "express";
 import crypto from "crypto";
 import { Subscription } from "../models/Subscription";
 import { User, IUser } from "../models/User";
+import { hashPassword } from "../lib/password";
 
 const router = Router();
-
-function hashPassword(password: string, salt: string): string {
-  return crypto
-    .pbkdf2Sync(password, salt, 100_000, 64, "sha512")
-    .toString("hex");
-}
 
 function toSessionUser(user: IUser): Express.User {
   return {

@@ -23,6 +23,7 @@ import authRouter from "./routes/auth";
 import paymentsRouter from "./routes/payments";
 import adminRouter from "./routes/admin";
 import { handleCoinbaseWebhook } from "./routes/paymentsWebhook";
+import { mountManagedWallets, startManagedWorkers, stopManagedWorkers } from "./managed";
 
 const app = express();
 const PORT = parseInt(process.env.PORT ?? "4000", 10);
@@ -256,6 +257,9 @@ app.use("/api/deploy", deployRouter);
 app.use("/api/wallet", walletRouter);
 app.use("/api/estimate", estimateRouter);
 
+// Managed wallets: mounts nothing unless MANAGED_WALLETS_ENABLED=true.
+mountManagedWallets(app);
+
 // ─── 404 ──────────────────────────────────────────────────────────────────────
 
 app.use((_req, res) => {
@@ -302,6 +306,11 @@ async function start(): Promise<void> {
       });
   }
 
+  // Managed wallets workers: no-op unless MANAGED_WALLETS_ENABLED=true.
+  startManagedWorkers().catch((err: Error) => {
+    console.error("[managed] worker start error:", err.message);
+  });
+
   // Kubernetes sends SIGTERM when replacing an old pod.
   // Stop accepting new HTTP connections and allow existing
   // requests to finish before the process exits.
@@ -309,6 +318,8 @@ async function start(): Promise<void> {
     console.log(
       `[server] ${signal} received. Starting graceful shutdown...`
     );
+
+    void stopManagedWorkers();
 
     server.close(() => {
       console.log("[server] HTTP server closed.");
