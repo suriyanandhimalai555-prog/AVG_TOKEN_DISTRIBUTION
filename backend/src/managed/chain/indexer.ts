@@ -498,7 +498,11 @@ export class ManagedIndexer {
       const n = await this.deps.deposits.insertManyIgnoreDuplicates(rows);
       return { inserted: Number(n) || 0, skipped: 0 };
     } catch (err) {
-      if (isTransientStoreError(err) || rows.length === 1) throw err;
+      if (isTransientStoreError(err)) throw err;
+      if (rows.length === 1) {
+        this.logRejectedRow(network, rows[0], err);
+        return { inserted: 0, skipped: 1 };
+      }
       this.logger.warn("deposit chunk insert failed; retrying row-by-row", {
         network,
         rows: rows.length,
@@ -513,19 +517,23 @@ export class ManagedIndexer {
       } catch (err) {
         if (isTransientStoreError(err)) throw err;
         skipped += 1;
-        this.logger.error("skipping deposit row the store rejected", {
-          network,
-          walletId: row.walletId,
-          asset: row.asset,
-          txHash: row.txHash,
-          logIndex: row.logIndex,
-          blockNumber: row.blockNumber,
-          amountLength: row.amountWei.length,
-          error: errorMessage(err),
-        });
+        this.logRejectedRow(network, row, err);
       }
     }
     return { inserted, skipped };
+  }
+
+  private logRejectedRow(network: Network, row: DepositInsert, err: unknown): void {
+    this.logger.error("skipping deposit row the store rejected", {
+      network,
+      walletId: row.walletId,
+      asset: row.asset,
+      txHash: row.txHash,
+      logIndex: row.logIndex,
+      blockNumber: row.blockNumber,
+      amountLength: row.amountWei.length,
+      error: errorMessage(err),
+    });
   }
 
   /** Dirty refresh, then the throttled full refresh and master refresh. */

@@ -38,6 +38,7 @@ COPY --from=build /app/hardhat.config.ts ./hardhat.config.ts
 COPY --from=build /app/tsconfig.json ./tsconfig.json
 COPY --from=build /app/tsconfig.build.json ./tsconfig.build.json
 COPY --from=build /app/remappings.txt ./remappings.txt
+COPY --from=build /app/migrations ./migrations
 
 RUN mkdir -p /app/output /app/cache
 

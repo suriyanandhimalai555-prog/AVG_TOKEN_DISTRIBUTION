@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { HDNodeWallet, Interface, Transaction, Wallet, parseUnits } from "ethers";
-import { TransferWorker, signersFromMnemonic } from "../../src/managed/chain/transferWorker";
+import { TransferWorker, isDefiniteRejection, signersFromMnemonic } from "../../src/managed/chain/transferWorker";
+import { shortRpcError } from "../../src/managed/chain/rpc";
 import type { WorkerDeps, WorkerOptions } from "../../src/managed/chain/transferWorker";
 import type { LogMeta } from "../../src/managed/chain/ports";
 import type { BalanceRefresher, DirtyPair } from "../../src/managed/chain/balances";
@@ -183,6 +184,25 @@ function ethersLikeError(code: string, shortMessage: string, signedTx: string): 
   return Object.assign(new Error(message), { code, shortMessage });
 }
 const RAW_SIGNED_TX = "0xf86c" + "ab".repeat(110);
+
+/**
+ * The real ethers v6 shape for a node error it cannot classify
+ * (provider-jsonrpc.js getRpcError → makeError("could not coalesce error",
+ * "UNKNOWN_ERROR", { error, payload })): the node text lives only in
+ * `err.error.message`, never in `shortMessage`.
+ */
+function coalesceError(nodeMessage: string, signedTx: string = RAW_SIGNED_TX): Error {
+  const error = { code: -32000, message: nodeMessage };
+  const payload = { method: "eth_sendRawTransaction", params: [signedTx], id: 7, jsonrpc: "2.0" };
+  const message = `could not coalesce error (error=${JSON.stringify(error)}, payload=${JSON.stringify(payload)}, code=UNKNOWN_ERROR, version=6.13.0)`;
+  return Object.assign(new Error(message), {
+    code: "UNKNOWN_ERROR",
+    shortMessage: "could not coalesce error",
+    error,
+    payload,
+    info: { error, payload },
+  });
+}
 
 const pool: PoolRow = {
   id: "pool-1",
@@ -509,14 +529,79 @@ describe("TransferWorker broadcast ambiguity (SR-03)", () => {
     expect(retry.transferTxHash).toBe(first.transferTxHash);
   });
 
-  it("'already known' from the node counts as broadcast", async () => {
+  it("'already known' wrapped by ethers as UNKNOWN_ERROR 'could not coalesce error' counts as broadcast (the real SR-03 scenario)", async () => {
     const t = funded();
+    // Node accepted the first attempt, the RPC timed out, withFallback re-sent and the node answered "already known".
     t.provider.acceptBeforeError = true;
     t.provider.broadcastErrorOnce = true;
-    t.provider.broadcastError = Object.assign(new Error("already known"), { code: "UNKNOWN_ERROR", shortMessage: "already known" });
+    t.provider.broadcastError = coalesceError("already known");
     const outcome = await t.worker.processJob(job());
     expect(outcome.status).toBe("CONFIRMED");
+    expect(t.provider.broadcasts).toHaveLength(1);
     expect(outcome.transferTxHash).toBe(Transaction.from(t.provider.broadcasts[0]).hash);
+    expect(t.transfers.patches.some((p) => p.patch.transferTxHash === null)).toBe(false);
+    const everything = JSON.stringify(t.transfers.patches) + JSON.stringify(t.audits);
+    expect(everything).not.toContain(RAW_SIGNED_TX);
+  });
+
+  it("an unclassified UNKNOWN_ERROR keeps the hash and fails as TIMEOUT; the retry never re-signs", async () => {
+    const t = funded();
+    t.provider.acceptBeforeError = true; // the node did take it, the error text just does not say so
+    t.provider.broadcastErrorOnce = true;
+    t.provider.broadcastError = coalesceError("internal error: unexpected shutdown");
+
+    const first = await t.worker.processJob(job());
+
+    const precomputed = Transaction.from(t.provider.broadcasts[0]).hash!;
+    expect(first).toMatchObject({ status: "FAILED", code: "TIMEOUT", transferTxHash: precomputed });
+    expect(t.transfers.patches.filter((p) => p.patch.transferTxHash !== undefined)).toEqual([
+      { id: "job-1", patch: { transferTxHash: precomputed } },
+    ]);
+    expect(t.transfers.last().error).toBe(
+      "Broadcast outcome unknown (UNKNOWN_ERROR: could not coalesce error: internal error: unexpected shutdown); hash kept"
+    );
+
+    const retry = await t.worker.processJob(job({ status: "SENDING", transferTxHash: precomputed, attempts: 2 }));
+    expect(retry).toMatchObject({ status: "CONFIRMED", transferTxHash: precomputed });
+    expect(t.provider.broadcasts).toHaveLength(1);
+  });
+
+  it("a definite rejection nested in an UNKNOWN_ERROR wrapper ('nonce too low') clears the hash → BROADCAST_FAILED", async () => {
+    const t = funded();
+    t.provider.broadcastError = coalesceError("nonce too low");
+    const outcome = await t.worker.processJob(job());
+    expect(outcome).toMatchObject({ status: "FAILED", code: "BROADCAST_FAILED", transferTxHash: null });
+    const hashPatches = t.transfers.patches.map((p) => p.patch.transferTxHash).filter((h) => h !== undefined);
+    expect(hashPatches).toHaveLength(2);
+    expect(hashPatches[1]).toBeNull();
+    expect(t.transfers.last().error).toBe("UNKNOWN_ERROR: could not coalesce error: nonce too low");
+  });
+
+  it("isDefiniteRejection: positive list only", () => {
+    for (const code of ["NONCE_EXPIRED", "INSUFFICIENT_FUNDS", "REPLACEMENT_UNDERPRICED", "UNSUPPORTED_OPERATION", "INVALID_ARGUMENT"]) {
+      expect(isDefiniteRejection(code, "whatever")).toBe(true);
+    }
+    for (const text of ["nonce too low", "insufficient funds for gas", "transaction underpriced", "intrinsic gas too low", "exceeds block gas limit", "invalid sender"]) {
+      expect(isDefiniteRejection(null, `could not coalesce error: ${text}`)).toBe(true);
+    }
+    expect(isDefiniteRejection("UNKNOWN_ERROR", "could not coalesce error")).toBe(false);
+    expect(isDefiniteRejection("TIMEOUT", "timeout")).toBe(false);
+    expect(isDefiniteRejection("NETWORK_ERROR", "could not detect network")).toBe(false);
+    expect(isDefiniteRejection("SERVER_ERROR", "server response 502 Bad Gateway")).toBe(false);
+    expect(isDefiniteRejection(null, "[managed] all RPC providers for bscTestnet failed: timeout")).toBe(false);
+    expect(isDefiniteRejection("UNKNOWN_ERROR", "could not coalesce error: already known")).toBe(false);
+  });
+
+  it("shortRpcError surfaces the nested node text without the payload", () => {
+    const r = shortRpcError(coalesceError("already known"));
+    expect(r).toEqual({ code: "UNKNOWN_ERROR", message: "could not coalesce error: already known" });
+    const viaInfo = shortRpcError(
+      Object.assign(new Error("x"), { code: "UNKNOWN_ERROR", shortMessage: "could not coalesce error", info: { error: { message: "nonce too low" } } })
+    );
+    expect(viaInfo.message).toBe("could not coalesce error: nonce too low");
+    // Not duplicated when the short message already carries it; plain errors unchanged.
+    expect(shortRpcError(Object.assign(new Error("y"), { shortMessage: "already known", error: { message: "already known" } })).message).toBe("already known");
+    expect(shortRpcError(new Error("timeout")).message).toBe("timeout");
   });
 
   it("a gas top-up with an ambiguous broadcast keeps its hash and is confirmed on retry without a second top-up", async () => {

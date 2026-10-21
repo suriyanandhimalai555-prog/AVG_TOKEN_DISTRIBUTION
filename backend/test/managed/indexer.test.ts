@@ -421,6 +421,25 @@ describe("ManagedIndexer.runOnce", () => {
     expect(next.skippedReason).toBe("up_to_date");
   });
 
+  it("SR-02: a one-row chunk whose only row is rejected is skipped too, and the state still advances", async () => {
+    const t = build(0); // fresh network: scans block 1001 only → exactly one managed row (W1 ← token B)
+    const only = FIXTURE_LOGS[2];
+    t.deposits.poison.set(
+      `${only.transactionHash}:${only.index}`,
+      Object.assign(new Error("numeric field overflow"), { code: "22003" })
+    );
+    const result = await t.indexer.runOnce(NETWORK);
+
+    expect(result.error).toBeNull();
+    expect(result.depositsInserted).toBe(0);
+    expect(result.skippedRows).toBe(1);
+    expect(t.deposits.calls).toBe(1); // no pointless row-by-row pass for a single row
+    expect(t.deposits.rows.size).toBe(0);
+    expect(t.state.state?.lastScannedBlock).toBe(1001);
+    expect(t.state.state?.lastError).toBeNull();
+    expect((await t.indexer.runOnce(NETWORK)).skippedReason).toBe("up_to_date");
+  });
+
   it("SR-02: a transient store error still fails the chunk (retried after backoff), not row-by-row", async () => {
     const t = build(999);
     t.deposits.poison.set(

@@ -158,16 +158,27 @@ export async function withFallback<T>(
   throw wrapExhausted(network, lastError);
 }
 
-/** Short, payload-free description of an RPC error (`shortMessage` first). */
+/**
+ * Short, payload-free description of an RPC error: `shortMessage` first, then
+ * the nested JSON-RPC node text. ethers v6 wraps any node error it cannot
+ * classify as `makeError("could not coalesce error", "UNKNOWN_ERROR",
+ * { error, payload })`, so texts such as "already known" or "nonce too low"
+ * live only in `err.error.message` (or `err.info.error.message`); they are
+ * appended so callers can classify the failure without the full message.
+ */
 export function shortRpcError(err: unknown): { code: string | null; message: string } {
   const obj = err && typeof err === "object" ? (err as Record<string, unknown>) : null;
   const code = obj && typeof obj.code === "string" ? obj.code : null;
-  const raw =
+  let raw =
     obj && typeof obj.shortMessage === "string" && obj.shortMessage
       ? obj.shortMessage
       : err instanceof Error
         ? err.message
         : String(err);
+  const nested =
+    (obj?.error as { message?: unknown } | undefined)?.message ??
+    (obj?.info as { error?: { message?: unknown } } | undefined)?.error?.message;
+  if (typeof nested === "string" && nested && !raw.includes(nested)) raw = `${raw}: ${nested}`;
   // Never carry a raw signed transaction / long hex payload in a message.
   const message = raw.replace(/0x[0-9a-fA-F]{130,}/g, "0x[hex-redacted]").slice(0, 300);
   return { code, message };

@@ -151,7 +151,12 @@ function WalletView({
             {data.tokens.map((tok) => (
               <li key={tok.tokenAddress} className="flex items-center justify-between gap-3 py-2.5">
                 <div className="min-w-0">
-                  <p className={`text-sm font-medium ${t.ink}`}>{tok.symbol}</p>
+                  <p className={`text-sm font-medium ${t.ink}`}>
+                    {tok.symbol}{" "}
+                    <span className="font-mono text-[11px] font-normal text-text-muted" title={tok.tokenAddress}>
+                      {shortAddr(tok.tokenAddress)}
+                    </span>
+                  </p>
                   <p className="truncate text-[11px] text-text-muted">{tok.name}</p>
                 </div>
                 <span className={`font-mono text-sm ${t.ink}`}>{formatUnits(tok.balanceWei, tok.decimals, 6)}</span>

@@ -50,7 +50,7 @@ import type {
   WalletsPort,
 } from "./ports";
 import { systemClock } from "./ports";
-import { chainIdFor, isRetryableRpcError, resilientProvider, shortRpcError } from "./rpc";
+import { chainIdFor, resilientProvider, shortRpcError } from "./rpc";
 import {
   FALLBACK_GAS_ESTIMATE_NATIVE,
   FALLBACK_GAS_ESTIMATE_TOKEN,
@@ -152,6 +152,27 @@ const ALREADY_KNOWN = [
   /known transaction/i,
   /transaction already in (the )?pool/i,
 ];
+
+/**
+ * Positive list of broadcast failures that prove the node did NOT accept the
+ * transaction (SR-03). Only these clear the stored hash; every other error —
+ * including ethers' `UNKNOWN_ERROR` "could not coalesce error" wrapper — is
+ * treated as "outcome unknown" and keeps the hash.
+ */
+const DEFINITE_REJECTION_CODES = new Set([
+  "NONCE_EXPIRED",
+  "INSUFFICIENT_FUNDS",
+  "REPLACEMENT_UNDERPRICED",
+  "UNSUPPORTED_OPERATION",
+  "INVALID_ARGUMENT",
+]);
+const DEFINITE_REJECTION_RE =
+  /nonce too low|insufficient funds|underpriced|intrinsic gas too low|exceeds block gas limit|invalid sender/i;
+
+export function isDefiniteRejection(code: string | null, message: string): boolean {
+  if (code && DEFINITE_REJECTION_CODES.has(code)) return true;
+  return DEFINITE_REJECTION_RE.test(message);
+}
 
 /**
  * Short, payload-free error text for logs, `managed_transfers.error` and audit
@@ -529,11 +550,14 @@ export class TransferWorker {
    * Signs offline with a pending nonce, persists the deterministic hash of the
    * signed transaction through `persist` BEFORE the network call (SR-03), then
    * broadcasts. Returns the hash.
-   *   - "already known": the node has it → return the hash.
-   *   - transient failure (timeout, network, 429): outcome unknown → keep the
-   *     stored hash and fail as TIMEOUT so the retry observes the chain first.
-   *   - definite rejection (nonce too low, insufficient funds, underpriced):
-   *     clear the stored hash and fail as BROADCAST_FAILED (retry re-signs).
+   *   - "already known" (anywhere in the nested node text): the node has it →
+   *     return the hash as broadcast.
+   *   - definite rejection (positive list: nonce too low, insufficient funds,
+   *     underpriced, …): clear the stored hash and fail as BROADCAST_FAILED
+   *     (retry re-signs).
+   *   - anything else (timeouts, network errors, 429, ethers UNKNOWN_ERROR
+   *     wrappers): outcome unknown → keep the stored hash and fail as TIMEOUT
+   *     so the retry observes the chain first.
    */
   private async broadcast(
     provider: ChainProvider,
@@ -578,7 +602,7 @@ export class TransferWorker {
         this.logger.warn("transaction already known to the node; continuing", { hash: expectedHash });
         return expectedHash;
       }
-      if (isRetryableRpcError(err)) {
+      if (!isDefiniteRejection(code, message)) {
         this.logger.warn("broadcast outcome unknown; hash kept for a receipt-first retry", {
           hash: expectedHash,
           code,
