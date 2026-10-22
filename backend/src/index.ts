@@ -23,6 +23,7 @@ import authRouter from "./routes/auth";
 import paymentsRouter from "./routes/payments";
 import adminRouter from "./routes/admin";
 import { handleCoinbaseWebhook } from "./routes/paymentsWebhook";
+import { mountManagedWallets, startManagedWorkers, stopManagedWorkers } from "./managed";
 
 const app = express();
 const PORT = parseInt(process.env.PORT ?? "4000", 10);
@@ -256,6 +257,9 @@ app.use("/api/deploy", deployRouter);
 app.use("/api/wallet", walletRouter);
 app.use("/api/estimate", estimateRouter);
 
+// Managed wallets: mounts nothing unless MANAGED_WALLETS_ENABLED=true.
+mountManagedWallets(app);
+
 // ─── 404 ──────────────────────────────────────────────────────────────────────
 
 app.use((_req, res) => {
@@ -302,6 +306,11 @@ async function start(): Promise<void> {
       });
   }
 
+  // Managed wallets workers: no-op unless MANAGED_WALLETS_ENABLED=true.
+  startManagedWorkers().catch((err: Error) => {
+    console.error("[managed] worker start error:", err.message);
+  });
+
   // Kubernetes sends SIGTERM when replacing an old pod.
   // Stop accepting new HTTP connections and allow existing
   // requests to finish before the process exits.
@@ -310,9 +319,23 @@ async function start(): Promise<void> {
       `[server] ${signal} received. Starting graceful shutdown...`
     );
 
-    server.close(() => {
-      console.log("[server] HTTP server closed.");
-      process.exit(0);
+    // Let the managed-wallet workers finish their current job (bounded to
+    // 10 s) before the HTTP server closes; the 20 s force-exit below is the
+    // outer bound. Never rejects: a stop failure is logged and shutdown goes on.
+    const workersStopped = Promise.race([
+      stopManagedWorkers().catch((err: Error) => {
+        console.error("[managed] worker stop error:", err.message);
+      }),
+      new Promise<void>((resolve) => {
+        setTimeout(resolve, 10_000).unref();
+      }),
+    ]);
+
+    void workersStopped.then(() => {
+      server.close(() => {
+        console.log("[server] HTTP server closed.");
+        process.exit(0);
+      });
     });
 
     // SSE progress streams and idle keep-alive sockets never finish on

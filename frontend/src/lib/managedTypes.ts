@@ -1,0 +1,493 @@
+/**
+ * Managed Wallets — shared API payload types.
+ *
+ * This file is the FRONTEND copy of backend/src/managed/types.ts and must stay
+ * identical to it apart from this header (copied; no imports allowed).
+ *
+ * Conventions
+ *  - All wei amounts cross the API as decimal strings.
+ *  - `Asset` is 'native' for BNB, otherwise the lowercase token contract address.
+ *  - Timestamps are ISO-8601 strings.
+ */
+
+export type Network = "bscMainnet" | "bscTestnet";
+
+/** 'native' or lowercase 0x token address. */
+export type Asset = string;
+export const NATIVE_ASSET: Asset = "native";
+
+export type PoolStatus = "ACTIVE" | "ARCHIVED";
+export type ManagedWalletStatus = "ACTIVE" | "DISABLED";
+export type TokenSource = "TRACKED" | "DISCOVERED";
+
+export type TransferStatus =
+  | "PENDING"
+  | "FUNDING_GAS"
+  | "SENDING"
+  | "CONFIRMED"
+  | "FAILED"
+  | "CANCELLED";
+
+export type PlanRejectionCode =
+  | "NOTHING_TO_SWEEP"
+  | "INSUFFICIENT_TOKEN_BALANCE"
+  | "INSUFFICIENT_NATIVE_FOR_AMOUNT"
+  | "MASTER_INSUFFICIENT_BNB"
+  | "GAS_LIMIT_EXCEEDED"
+  | "INVALID_DESTINATION";
+
+export type TransferFailureCode =
+  | PlanRejectionCode
+  | "TIMEOUT"
+  | "BROADCAST_FAILED"
+  | "REVERTED"
+  | "MAX_ATTEMPTS"
+  | "KEY_VAULT_UNAVAILABLE"
+  | "POOL_ARCHIVED"
+  | "WALLET_DISABLED"
+  | "UNKNOWN";
+
+export type ManagedAuditAction =
+  | "POOL_CREATED"
+  | "POOL_UPDATED"
+  | "POOL_ARCHIVED"
+  | "MNEMONIC_REVEALED"
+  | "WALLETS_GENERATED"
+  | "WALLET_ASSIGNED"
+  | "WALLET_STATUS_CHANGED"
+  | "VIEW_TOKEN_ROTATED"
+  | "TOKEN_TRACKED"
+  | "TOKEN_HIDDEN"
+  | "TOKEN_UNHIDDEN"
+  | "TRANSFER_REQUESTED"
+  | "TRANSFER_RETRIED"
+  | "TRANSFER_CONFIRMED"
+  | "TRANSFER_FAILED"
+  | "SWEEP_REQUESTED"
+  | "INDEXER_RUN_REQUESTED"
+  | "EXPORT_DOWNLOADED";
+
+/** Standard API error envelope. */
+export interface ApiError {
+  error: string;
+  code?: string;
+}
+
+// ─── Domain objects as returned by the API ───────────────────────────────────
+
+export interface PoolSummary {
+  id: string;
+  name: string;
+  network: Network;
+  masterAddress: string;
+  walletCount: number;
+  status: PoolStatus;
+  createdAt: string;
+}
+
+export interface Pool extends PoolSummary {
+  accountPath: string;
+  nextIndex: number;
+  keyVersion: number;
+  mnemonicRevealedAt: string | null;
+  updatedAt: string;
+}
+
+export interface PoolStats {
+  wallets: number;
+  assetsTracked: number;
+  lastDepositAt: string | null;
+}
+
+export interface BalanceEntry {
+  asset: Asset;
+  symbol: string;
+  name: string;
+  decimals: number;
+  /** wei as decimal string */
+  balanceWei: string;
+  /** human-readable, already divided by decimals */
+  balance: string;
+  blockNumber: number | null;
+  updatedAt: string | null;
+  hidden: boolean;
+}
+
+export interface ManagedWallet {
+  id: string;
+  poolId: string;
+  derivationIndex: number;
+  address: string;
+  label: string | null;
+  holderName: string | null;
+  holderEmail: string | null;
+  holderUserId: string | null;
+  status: ManagedWalletStatus;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ManagedWalletWithBalances extends ManagedWallet {
+  balances: BalanceEntry[];
+  lastDepositAt: string | null;
+}
+
+export interface ManagedWalletDetail extends ManagedWalletWithBalances {
+  viewToken: string;
+  viewUrl: string;
+  deposits: Deposit[];
+  transfers: TransferJob[];
+}
+
+export interface ManagedToken {
+  id: string;
+  network: Network;
+  tokenAddress: string;
+  symbol: string;
+  name: string;
+  decimals: number;
+  source: TokenSource;
+  hidden: boolean;
+  firstSeenBlock: number | null;
+  createdAt: string;
+}
+
+export interface Deposit {
+  id: string;
+  walletId: string;
+  walletAddress: string;
+  asset: Asset;
+  symbol: string;
+  decimals: number;
+  fromAddress: string;
+  amountWei: string;
+  amount: string;
+  txHash: string;
+  logIndex: number;
+  blockNumber: number;
+  blockTime: string | null;
+  createdAt: string;
+}
+
+export interface TransferJob {
+  id: string;
+  poolId: string;
+  walletId: string;
+  walletAddress: string;
+  batchId: string | null;
+  toAddress: string;
+  asset: Asset;
+  symbol: string;
+  decimals: number;
+  amountWei: string;
+  amount: string;
+  sweepAll: boolean;
+  status: TransferStatus;
+  gasTopupTxHash: string | null;
+  transferTxHash: string | null;
+  gasPriceWei: string | null;
+  gasLimit: number | null;
+  error: string | null;
+  errorCode: TransferFailureCode | null;
+  attempts: number;
+  requestedBy: string;
+  createdAt: string;
+  updatedAt: string;
+  confirmedAt: string | null;
+}
+
+export interface TransferTxIntent {
+  kind: "topup" | "transfer";
+  from: string;
+  to: string;
+  valueWei: string;
+  data?: string;
+}
+
+export type TransferPlan =
+  | {
+      ok: true;
+      gasLimit: string;
+      gasPriceWei: string;
+      gasCostWei: string;
+      topUpWei: string;
+      amountWei: string;
+      childNativeWei: string;
+      masterNativeWei: string;
+      txs: TransferTxIntent[];
+    }
+  | {
+      ok: false;
+      code: PlanRejectionCode;
+      message: string;
+    };
+
+export interface IndexerNetworkStatus {
+  network: Network;
+  enabled: boolean;
+  lastScannedBlock: number;
+  head: number | null;
+  lag: number | null;
+  lastRunAt: string | null;
+  lastError: string | null;
+}
+
+export interface ManagedAudit {
+  id: string;
+  userId: string;
+  poolId: string | null;
+  walletId: string | null;
+  action: ManagedAuditAction;
+  details: Record<string, unknown>;
+  createdAt: string;
+}
+
+// ─── Admin API: requests and responses ───────────────────────────────────────
+
+export interface HealthResponse {
+  enabled: boolean;
+  keyVault: "ok" | "missing";
+  migrated: boolean;
+  indexer: {
+    enabled: boolean;
+    lastBlockByNetwork: Partial<Record<Network, number>>;
+  };
+}
+
+export interface ReauthRequest {
+  password: string;
+}
+export interface ReauthResponse {
+  ok: true;
+  validUntil: string;
+}
+
+export interface ListPoolsResponse {
+  pools: PoolSummary[];
+}
+
+export interface CreatePoolRequest {
+  name: string;
+  network: Network;
+  /** Optional existing BIP-39 phrase to import. Omit to generate 12 words. */
+  mnemonic?: string;
+}
+export interface CreatePoolResponse {
+  pool: Pool;
+  masterAddress: string;
+}
+
+export interface GetPoolResponse {
+  pool: Pool;
+  stats: PoolStats;
+}
+
+export interface UpdatePoolRequest {
+  name?: string;
+  status?: PoolStatus;
+}
+export interface UpdatePoolResponse {
+  pool: Pool;
+}
+
+export interface RevealMnemonicResponse {
+  mnemonic: string;
+  masterAddress: string;
+  accountPath: string;
+}
+
+export interface GenerateWalletsRequest {
+  count: number;
+  labelPrefix?: string;
+}
+export interface GenerateWalletsResponse {
+  created: Array<{ id: string; derivationIndex: number; address: string }>;
+  nextIndex: number;
+}
+
+export interface ListWalletsQuery {
+  skip?: number;
+  limit?: number;
+  search?: string;
+}
+export interface ListWalletsResponse {
+  wallets: ManagedWalletWithBalances[];
+  total: number;
+}
+
+export interface GetWalletResponse {
+  wallet: ManagedWalletDetail;
+}
+
+export interface UpdateWalletRequest {
+  label?: string | null;
+  holderName?: string | null;
+  holderEmail?: string | null;
+  /** Email of an existing app user to link; null unlinks. */
+  holderUserEmail?: string | null;
+  status?: ManagedWalletStatus;
+}
+export interface UpdateWalletResponse {
+  wallet: ManagedWallet;
+}
+
+export interface RotateViewTokenResponse {
+  viewToken: string;
+  viewUrl: string;
+}
+
+export interface ListDepositsQuery {
+  skip?: number;
+  limit?: number;
+  asset?: Asset;
+}
+export interface ListDepositsResponse {
+  deposits: Deposit[];
+  total: number;
+}
+
+export interface TreasuryTotal {
+  asset: Asset;
+  symbol: string;
+  name: string;
+  decimals: number;
+  totalWei: string;
+  total: string;
+  walletsWithBalance: number;
+}
+
+export interface TreasuryMasterBalance {
+  asset: Asset;
+  symbol: string;
+  decimals: number;
+  balanceWei: string;
+  balance: string;
+}
+
+export interface PoolTreasuryResponse {
+  poolId: string;
+  network: Network;
+  masterAddress: string;
+  totals: TreasuryTotal[];
+  master: TreasuryMasterBalance[];
+  walletCount: number;
+  lowGas: boolean;
+  updatedAt: string | null;
+}
+
+export interface GlobalTreasuryResponse {
+  totalsByNetwork: Array<{ network: Network; totals: TreasuryTotal[] }>;
+  byPool: PoolTreasuryResponse[];
+  poolCount: number;
+  walletCount: number;
+}
+
+export interface PlanTransferRequest {
+  walletId: string;
+  toAddress: string;
+  asset: Asset;
+  /** Human-readable amount (e.g. "12.5"); ignored when sweepAll is true. */
+  amount?: string;
+  sweepAll?: boolean;
+}
+export interface PlanTransferResponse {
+  plan: TransferPlan;
+}
+
+export interface CreateTransferRequest extends PlanTransferRequest {
+  idempotencyKey: string;
+}
+export interface CreateTransferResponse {
+  job: TransferJob;
+}
+
+export interface SweepRequest {
+  poolId: string;
+  walletIds: string[] | "ALL";
+  assets: Asset[] | "ALL";
+  /** Defaults to the pool master address. */
+  toAddress?: string;
+  idempotencyKey: string;
+}
+export interface SweepResponse {
+  batchId: string;
+  jobs: number;
+  skipped: number;
+}
+
+export interface ListTransfersQuery {
+  poolId?: string;
+  batchId?: string;
+  status?: TransferStatus;
+  skip?: number;
+  limit?: number;
+}
+export interface ListTransfersResponse {
+  jobs: TransferJob[];
+  total: number;
+  byStatus: Partial<Record<TransferStatus, number>>;
+}
+
+export interface GetTransferResponse {
+  job: TransferJob;
+}
+
+export interface ListTokensQuery {
+  network?: Network;
+  includeHidden?: boolean;
+}
+export interface ListTokensResponse {
+  tokens: ManagedToken[];
+}
+
+export interface TrackTokenRequest {
+  network: Network;
+  tokenAddress: string;
+}
+export interface TrackTokenResponse {
+  token: ManagedToken;
+}
+
+export interface UpdateTokenRequest {
+  hidden: boolean;
+}
+export interface UpdateTokenResponse {
+  token: ManagedToken;
+}
+
+export interface IndexerStatusResponse {
+  byNetwork: IndexerNetworkStatus[];
+}
+
+export interface IndexerRunResponse {
+  started: true;
+}
+
+// ─── Public holder view ──────────────────────────────────────────────────────
+
+export interface WalletViewResponse {
+  label: string | null;
+  address: string;
+  network: Network;
+  native: { symbol: "BNB" | "tBNB"; balanceWei: string; balance: string };
+  tokens: Array<{
+    tokenAddress: string;
+    symbol: string;
+    name: string;
+    decimals: number;
+    balanceWei: string;
+    balance: string;
+  }>;
+  deposits: Array<{
+    txHash: string;
+    asset: Asset;
+    symbol: string;
+    decimals: number;
+    amountWei: string;
+    amount: string;
+    from: string;
+    blockNumber: number;
+    blockTime: string | null;
+  }>;
+  updatedAt: string | null;
+}

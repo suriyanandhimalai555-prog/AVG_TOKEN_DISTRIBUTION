@@ -24,6 +24,8 @@ import AdminLayout from "@/pages/admin/AdminLayout";
 import AdminOverview from "@/pages/admin/AdminOverview";
 import AdminUsers from "@/pages/admin/AdminUsers";
 import AdminPayments from "@/pages/admin/AdminPayments";
+import { managedAdminRoutes } from "@/pages/admin/managed/routes";
+import WalletViewPage from "@/pages/WalletViewPage";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -120,8 +122,14 @@ export default function App() {
               <Route index element={<AdminOverview />} />
               <Route path="users" element={<AdminUsers />} />
               <Route path="payments" element={<AdminPayments />} />
+              {managedAdminRoutes.map((r) => (
+                <Route key={r.path} path={r.path} element={r.element} />
+              ))}
             </Route>
           </Route>
+
+          {/* Managed Wallets: public holder page (no login) */}
+          <Route path="/w/:viewToken" element={<WalletViewPage />} />
 
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>

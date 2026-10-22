@@ -11,4 +11,10 @@ declare global {
   }
 }
 
+declare module "express-session" {
+  interface SessionData {
+    managedReauthAt?: number;
+  }
+}
+
 export {};

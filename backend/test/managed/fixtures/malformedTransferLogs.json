@@ -1,0 +1,70 @@
+{
+  "_comment": "Transfer-signature logs addressed to managed wallet W1 (0x7099…) that the indexer must reject (SR-02): any contract can emit these. Same raw eth_getLogs shape as transferLogs.json. Token X = 0x3333….",
+  "logs": [
+    {
+      "_case": "data is 33 bytes (one word + 1 byte): BigInt would exceed NUMERIC(78,0)",
+      "address": "0x3333333333333333333333333333333333333333",
+      "topics": [
+        "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef",
+        "0x000000000000000000000000f39fd6e51aad88f6f4ce6ab8827279cfffb92266",
+        "0x00000000000000000000000070997970c51812dc3a010c7d01b50e0d17dc79c8"
+      ],
+      "data": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "blockNumber": "0x3e8",
+      "transactionHash": "0xbad0000000000000000000000000000000000000000000000000000000000001",
+      "transactionIndex": "0x5",
+      "blockHash": "0xb10c0000000000000000000000000000000000000000000000000000000003e8",
+      "logIndex": "0x7",
+      "removed": false
+    },
+    {
+      "_case": "ERC-721 Transfer: 4 topics (tokenId indexed) and empty data",
+      "address": "0x3333333333333333333333333333333333333333",
+      "topics": [
+        "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef",
+        "0x000000000000000000000000f39fd6e51aad88f6f4ce6ab8827279cfffb92266",
+        "0x00000000000000000000000070997970c51812dc3a010c7d01b50e0d17dc79c8",
+        "0x0000000000000000000000000000000000000000000000000000000000000001"
+      ],
+      "data": "0x",
+      "blockNumber": "0x3e8",
+      "transactionHash": "0xbad0000000000000000000000000000000000000000000000000000000000002",
+      "transactionIndex": "0x6",
+      "blockHash": "0xb10c0000000000000000000000000000000000000000000000000000000003e8",
+      "logIndex": "0x8",
+      "removed": false
+    },
+    {
+      "_case": "zero amount",
+      "address": "0x3333333333333333333333333333333333333333",
+      "topics": [
+        "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef",
+        "0x000000000000000000000000f39fd6e51aad88f6f4ce6ab8827279cfffb92266",
+        "0x00000000000000000000000070997970c51812dc3a010c7d01b50e0d17dc79c8"
+      ],
+      "data": "0x0000000000000000000000000000000000000000000000000000000000000000",
+      "blockNumber": "0x3e9",
+      "transactionHash": "0xbad0000000000000000000000000000000000000000000000000000000000003",
+      "transactionIndex": "0x7",
+      "blockHash": "0xb10c0000000000000000000000000000000000000000000000000000000003e9",
+      "logIndex": "0x9",
+      "removed": false
+    },
+    {
+      "_case": "data shorter than one word (31 bytes)",
+      "address": "0x3333333333333333333333333333333333333333",
+      "topics": [
+        "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef",
+        "0x000000000000000000000000f39fd6e51aad88f6f4ce6ab8827279cfffb92266",
+        "0x00000000000000000000000070997970c51812dc3a010c7d01b50e0d17dc79c8"
+      ],
+      "data": "0x00000000000000000000000000000000000000000000000000000000000001",
+      "blockNumber": "0x3e9",
+      "transactionHash": "0xbad0000000000000000000000000000000000000000000000000000000000004",
+      "transactionIndex": "0x8",
+      "blockHash": "0xb10c0000000000000000000000000000000000000000000000000000000003e9",
+      "logIndex": "0xa",
+      "removed": false
+    }
+  ]
+}

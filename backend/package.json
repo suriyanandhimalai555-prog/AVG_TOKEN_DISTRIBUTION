@@ -14,7 +14,12 @@
     "generate:wallets": "npx ts-node scripts/generate-wallets.ts",
     "prepare:distribution": "npx ts-node scripts/prepare-distribution.ts",
     "distribute": "npx ts-node scripts/distribute.ts",
-    "export": "npx ts-node scripts/export-results.ts"
+    "export": "npx ts-node scripts/export-results.ts",
+    "recover:hd": "npx ts-node scripts/recover-hd-wallets.ts",
+    "migrate": "node dist/migrate.js",
+    "migrate:dev": "ts-node src/migrate.ts",
+    "managed:gen-key": "ts-node scripts/managed/gen-key.ts",
+    "test": "vitest run"
   },
   "dependencies": {
     "@openzeppelin/contracts": "^5.0.0",
@@ -25,6 +30,7 @@
     "ethers": "^6.11.1",
     "exceljs": "^4.4.0",
     "express": "^4.18.3",
+    "express-rate-limit": "^8.7.1",
     "express-session": "^1.19.0",
     "passport": "^0.7.0",
     "passport-google-oauth20": "^2.0.0",
@@ -41,10 +47,13 @@
     "@types/passport": "^1.0.17",
     "@types/passport-google-oauth20": "^2.0.17",
     "@types/pg": "^8.23.1",
+    "@types/supertest": "^7.2.1",
     "@types/uuid": "^9.0.8",
     "hardhat": "^2.22.0",
+    "supertest": "^7.3.1",
     "ts-node": "^10.9.2",
     "ts-node-dev": "^2.0.0",
-    "typescript": "^5.4.3"
+    "typescript": "^5.4.3",
+    "vitest": "^2.1.9"
   }
 }
