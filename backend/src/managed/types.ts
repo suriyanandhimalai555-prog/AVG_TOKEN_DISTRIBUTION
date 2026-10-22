@@ -256,6 +256,10 @@ export interface HealthResponse {
     enabled: boolean;
     lastBlockByNetwork: Partial<Record<Network, number>>;
   };
+  /** Transfer worker in this process. Off on a backend that only queues jobs for another server. */
+  worker: {
+    enabled: boolean;
+  };
 }
 
 export interface ReauthRequest {

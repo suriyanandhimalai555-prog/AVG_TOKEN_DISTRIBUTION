@@ -61,7 +61,7 @@ export default function ManagedSettingsPage() {
             <Loader2 size={14} className="animate-spin" /> Checking…
           </p>
         ) : h ? (
-          <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-3">
+          <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
             <HealthTile
               ok={h.keyVault === "ok"}
               label="Encryption key"
@@ -79,6 +79,16 @@ export default function ManagedSettingsPage() {
                       .map(([n, b]) => `${n}: ${formatInt(b)}`)
                       .join(" · ")
                   : "MANAGED_INDEXER_ENABLED controls the in-process scanner."
+              }
+            />
+            <HealthTile
+              ok={h.worker?.enabled ?? true}
+              label="Transfer worker"
+              value={(h.worker?.enabled ?? true) ? "Enabled" : "Off here"}
+              hint={
+                (h.worker?.enabled ?? true)
+                  ? "Signs and broadcasts queued sweeps and transfers."
+                  : "MANAGED_WORKER_ENABLED=false: transfers queue here and the server's worker sends them."
               }
             />
           </div>

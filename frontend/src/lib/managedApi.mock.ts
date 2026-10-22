@@ -679,7 +679,7 @@ export const managedApi = {
     await delay();
     const lastBlockByNetwork: Partial<Record<Network, number>> = {};
     for (const s of state.indexer) lastBlockByNetwork[s.network] = s.lastScannedBlock;
-    return { enabled: true, keyVault: state.keyVault, migrated: true, indexer: { enabled: true, lastBlockByNetwork } };
+    return { enabled: true, keyVault: state.keyVault, migrated: true, indexer: { enabled: true, lastBlockByNetwork }, worker: { enabled: true } };
   },
 
   async reauth(password: string): Promise<ReauthResponse> {

@@ -21,3 +21,14 @@ export function isManagedEnabled(): boolean {
 export function isIndexerEnabled(): boolean {
   return process.env.MANAGED_INDEXER_ENABLED !== "false";
 }
+
+/**
+ * Whether the transfer worker (which signs and broadcasts from master and
+ * managed wallets) should run in this process. Default on. Set
+ * MANAGED_WORKER_ENABLED=false on any backend that shares a database with the
+ * production server (e.g. a developer laptop), so only one worker ever
+ * processes the job queue and master-wallet nonces never collide.
+ */
+export function isWorkerEnabled(): boolean {
+  return process.env.MANAGED_WORKER_ENABLED !== "false";
+}

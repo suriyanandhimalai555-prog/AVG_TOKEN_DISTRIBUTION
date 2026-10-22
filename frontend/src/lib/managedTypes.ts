@@ -256,6 +256,10 @@ export interface HealthResponse {
     enabled: boolean;
     lastBlockByNetwork: Partial<Record<Network, number>>;
   };
+  /** Absent on servers that predate the worker switch (the worker always ran there). */
+  worker?: {
+    enabled: boolean;
+  };
 }
 
 export interface ReauthRequest {

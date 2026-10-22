@@ -11,7 +11,7 @@ import { requireAdmin } from "../../middleware/requireAdmin";
 import { User } from "../../models/User";
 import { isKeyVaultAvailable } from "../keyVault";
 import { maxWalletsPerPool } from "../models/pools";
-import { isIndexerEnabled } from "../middleware/featureFlag";
+import { isIndexerEnabled, isWorkerEnabled } from "../middleware/featureFlag";
 import { jsonOnlyGuard } from "../middleware/jsonOnly";
 import { keyVaultGuard } from "../middleware/keyVaultGuard";
 import { isNotMigratedError, managedErrorHandler } from "../middleware/notMigrated";
@@ -104,6 +104,7 @@ export function createAdminRouter(): Router {
         keyVault: isKeyVaultAvailable() ? "ok" : "missing",
         migrated: isMigrated,
         indexer: { enabled: isIndexerEnabled(), lastBlockByNetwork: lastBlocks },
+        worker: { enabled: isWorkerEnabled() },
         maxWalletsPerPool: maxWalletsPerPool(),
       };
       res.json(body);

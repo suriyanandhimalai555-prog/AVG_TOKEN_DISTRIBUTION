@@ -123,7 +123,7 @@ describe("redaction at managed log call sites (dynamic)", () => {
     process.env.MANAGED_WALLETS_ENABLED = "true";
     mountManagedWallets(express());
     expect(lines).toHaveLength(1);
-    expect(lines[0]).toMatch(/^\[managed\] routes mounted \{"keyVault":"(ok|missing)","indexer":(true|false)\}$/);
+    expect(lines[0]).toMatch(/^\[managed\] routes mounted \{"keyVault":"(ok|missing)","indexer":(true|false),"worker":(true|false)\}$/);
   });
 
   it("the audit-failure path logs through managedLog without the details", async () => {

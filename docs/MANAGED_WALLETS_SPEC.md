@@ -405,6 +405,7 @@ New env vars (all added to `backend/.env.example` with comments):
 MANAGED_WALLETS_ENABLED=false          # master switch; off = app identical to today
 WALLET_ENCRYPTION_KEY=                 # base64 32 bytes; npm run managed:gen-key
 MANAGED_INDEXER_ENABLED=true           # run the deposit scanner in this process
+MANAGED_WORKER_ENABLED=true            # run the transfer worker in this process (false on a laptop that shares the production DB)
 MANAGED_INDEXER_INTERVAL_MS=30000
 MANAGED_INDEXER_CONFIRMATIONS=15
 MANAGED_INDEXER_BLOCK_CHUNK=1000

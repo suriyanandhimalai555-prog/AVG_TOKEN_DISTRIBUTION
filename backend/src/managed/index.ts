@@ -24,7 +24,7 @@ import { ManagedIndexer } from "./chain/indexer";
 import { resilientProvider } from "./chain/rpc";
 import { TransferWorker } from "./chain/transferWorker";
 import { isKeyVaultAvailable } from "./keyVault";
-import { isIndexerEnabled, isManagedEnabled } from "./middleware/featureFlag";
+import { isIndexerEnabled, isManagedEnabled, isWorkerEnabled } from "./middleware/featureFlag";
 import { managedLog } from "./redact";
 import { createAdminRouter } from "./routes/admin";
 import { createViewRouter } from "./routes/view";
@@ -85,6 +85,7 @@ export function mountManagedWallets(app: Express): void {
   managedLog("info", "routes mounted", {
     keyVault: isKeyVaultAvailable() ? "ok" : "missing",
     indexer: isIndexerEnabled(),
+    worker: isWorkerEnabled(),
   });
 }
 
@@ -116,7 +117,11 @@ export async function startManagedWorkers(): Promise<void> {
   } else {
     managedLog("info", "indexer disabled by MANAGED_INDEXER_ENABLED=false");
   }
-  runtime.worker.start();
+  if (isWorkerEnabled()) {
+    runtime.worker.start();
+  } else {
+    managedLog("info", "transfer worker disabled by MANAGED_WORKER_ENABLED=false; transfers queue for the server's worker");
+  }
 }
 
 /** Stops the indexer and the worker; safe to call when nothing started. */

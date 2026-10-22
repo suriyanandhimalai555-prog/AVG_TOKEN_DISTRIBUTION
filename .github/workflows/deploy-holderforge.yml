@@ -99,13 +99,14 @@ jobs:
           IMAGE_TAG: ${{ github.sha }}
           GHCR_USERNAME: ${{ secrets.GHCR_USERNAME }}
           GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
+          WALLET_ENCRYPTION_KEY: ${{ secrets.WALLET_ENCRYPTION_KEY }}
 
         with:
           host: ${{ secrets.HOST }}
           username: ${{ secrets.USERNAME }}
           key: ${{ secrets.SSH_KEY }}
           port: ${{ secrets.PORT }}
-          envs: IMAGE_TAG,GHCR_USERNAME,GHCR_TOKEN
+          envs: IMAGE_TAG,GHCR_USERNAME,GHCR_TOKEN,WALLET_ENCRYPTION_KEY
           script_stop: true
 
           script: |
@@ -212,6 +213,41 @@ jobs:
               -o yaml | kubectl apply -f -
 
             echo "✅ GHCR pull secret ready."
+            echo ""
+
+            # Managed Wallets: copy the WALLET_ENCRYPTION_KEY GitHub secret into
+            # holderforge-backend-env, but only when the server has no key yet.
+            # An existing key is never replaced: pool seeds are encrypted with it.
+            echo "🔑 Checking Managed Wallets encryption key..."
+
+            if [ -z "${WALLET_ENCRYPTION_KEY:-}" ]; then
+              echo "ℹ️ No WALLET_ENCRYPTION_KEY GitHub secret; server key left as is."
+            elif ! kubectl get secret holderforge-backend-env \
+              -n "$NAMESPACE" >/dev/null 2>&1; then
+              echo "⚠️ Secret holderforge-backend-env not found; key not set."
+            else
+              CURRENT_KEY="$(kubectl get secret holderforge-backend-env \
+                -n "$NAMESPACE" \
+                -o jsonpath='{.data.WALLET_ENCRYPTION_KEY}' | base64 -d 2>/dev/null || true)"
+
+              if [ -z "$CURRENT_KEY" ]; then
+                # printf is a shell builtin, so the key never appears in a process list.
+                printf '{"stringData":{"WALLET_ENCRYPTION_KEY":"%s"}}' "$WALLET_ENCRYPTION_KEY" \
+                  | kubectl patch secret holderforge-backend-env \
+                    -n "$NAMESPACE" \
+                    --type merge \
+                    --patch-file /dev/stdin >/dev/null
+                echo "✅ WALLET_ENCRYPTION_KEY added to holderforge-backend-env."
+              elif [ "$CURRENT_KEY" = "$WALLET_ENCRYPTION_KEY" ]; then
+                echo "✅ WALLET_ENCRYPTION_KEY already set and matches."
+              else
+                echo "⚠️ holderforge-backend-env already has a DIFFERENT WALLET_ENCRYPTION_KEY."
+                echo "⚠️ Not replacing it (existing pools are encrypted with it); make local backends use the server's key."
+              fi
+
+              unset CURRENT_KEY
+            fi
+
             echo ""
 
             echo "💾 Checking backend persistent storage..."
