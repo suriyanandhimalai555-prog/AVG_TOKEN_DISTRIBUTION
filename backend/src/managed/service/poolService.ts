@@ -22,7 +22,8 @@ import type {
   UpdatePoolResponse,
 } from "../types";
 import { parseNetwork, requireString, toPool, toPoolSummary } from "./common";
-import { badRequest, notFound, validation } from "./errors";
+import { badRequest, conflict, notFound, validation } from "./errors";
+import { refreshBalancesSoon } from "./indexerService";
 
 export async function requirePoolRecord(poolId: string): Promise<PoolRecord> {
   const pool = await pools.findById(poolId);
@@ -78,6 +79,17 @@ export async function createPool(
   let record: PoolRecord;
   try {
     const masterAddress = masterSignerFor(secretText, seedType).address;
+    // One pool per master wallet: the same secret derives the same managed
+    // addresses, which must stay unique across pools and networks.
+    const existing = await pools.findByMasterAddress(masterAddress);
+    if (existing) {
+      throw conflict("POOL_EXISTS", `A pool already uses this wallet: "${existing.name}"`, {
+        poolId: existing.id,
+        poolName: existing.name,
+        network: existing.network,
+        masterAddress: existing.masterAddress,
+      });
+    }
     const secret = encryptSecret(secretText, id);
     record = await pools.create({
       id,
@@ -102,6 +114,7 @@ export async function createPool(
     details: { name, network, masterAddress: record.masterAddress, seedType, imported: hasPhrase || hasKey },
   });
 
+  refreshBalancesSoon(network);
   return { pool: toPool(record), masterAddress: record.masterAddress };
 }
 

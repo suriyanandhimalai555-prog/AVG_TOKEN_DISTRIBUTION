@@ -55,7 +55,7 @@ export const managedErrorHandler: ErrorRequestHandler = (err, req, res, next) =>
   }
 
   if (err instanceof ManagedApiError) {
-    return res.status(err.status).json({ error: err.message, code: err.code });
+    return res.status(err.status).json({ ...(err.details ?? {}), error: err.message, code: err.code });
   }
 
   // Malformed JSON bodies from express.json() carry a status and `type`.

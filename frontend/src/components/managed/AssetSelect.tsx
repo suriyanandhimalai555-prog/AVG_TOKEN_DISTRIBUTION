@@ -6,11 +6,11 @@
  */
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
-import { useQuery } from "@tanstack/react-query";
-import { Check, ChevronDown, Coins, Layers, Search } from "lucide-react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { Check, ChevronDown, Coins, Layers, Loader2, Plus, Search } from "lucide-react";
 import { NATIVE_ASSET, type Asset, type Network } from "@/lib/managedTypes";
 import { managedApi } from "./client";
-import { nativeSymbol } from "./format";
+import { apiErrorMessage, nativeSymbol, networkLabel } from "./format";
 import { useManagedTheme } from "./theme";
 import TokenIcon, { compareTokens, isPreferredToken } from "./TokenIcon";
 
@@ -56,6 +56,35 @@ export function useAssetOptions(network: Network | null): { options: AssetOption
   return { options, loading: isLoading };
 }
 
+const ADDRESS_RE = /^0x[0-9a-fA-F]{40}$/;
+
+/**
+ * Tracks a token by contract address (metadata is read on-chain by the API)
+ * and refreshes every token list and balance view. "Already tracked" counts
+ * as success. Returns the lowercase address.
+ */
+export function useImportToken(): (network: Network, address: string) => Promise<string> {
+  const qc = useQueryClient();
+  return async (network, address) => {
+    const tokenAddress = address.trim().toLowerCase();
+    try {
+      await managedApi.trackToken({ network, tokenAddress });
+    } catch (err) {
+      const code = (err as { response?: { data?: { code?: string } } }).response?.data?.code;
+      if (code !== "ALREADY_TRACKED") throw err;
+    }
+    void qc.invalidateQueries({ queryKey: ["managed", "tokens"] });
+    // Balances refresh on the server right after the import; pick them up shortly.
+    for (const ms of [4000, 12000]) {
+      setTimeout(() => {
+        void qc.invalidateQueries({ queryKey: ["managed", "wallets"] });
+        void qc.invalidateQueries({ queryKey: ["managed", "treasury"] });
+      }, ms);
+    }
+    return tokenAddress;
+  };
+}
+
 interface AssetSelectProps {
   options: AssetOption[];
   value: Asset | null;
@@ -63,12 +92,29 @@ interface AssetSelectProps {
   /** Label for the "no filter" choice. */
   allLabel?: string;
   disabled?: boolean;
+  /**
+   * Networks a pasted contract address can be imported on. Omit to disable
+   * importing. `importValue` maps the imported token to this select's value.
+   */
+  importNetworks?: Network[];
+  importValue?: (network: Network, address: string) => Asset;
 }
 
-export default function AssetSelect({ options, value, onChange, allLabel = "All assets", disabled }: AssetSelectProps) {
+export default function AssetSelect({
+  options,
+  value,
+  onChange,
+  allLabel = "All assets",
+  disabled,
+  importNetworks,
+  importValue = (_network, address) => address,
+}: AssetSelectProps) {
   const { soft, ink, bgCell, isDark } = useManagedTheme();
+  const importToken = useImportToken();
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
+  const [importing, setImporting] = useState<Network | null>(null);
+  const [importError, setImportError] = useState("");
   const [active, setActive] = useState(0);
   const rootRef = useRef<HTMLDivElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
@@ -102,7 +148,31 @@ export default function AssetSelect({ options, value, onChange, allLabel = "All 
     };
   }, [open, options, value]);
 
-  useEffect(() => setActive(0), [query]);
+  useEffect(() => {
+    setActive(0);
+    setImportError("");
+  }, [query]);
+
+  // A pasted contract address that is not listed yet can be imported.
+  const pasted = query.trim();
+  const importCandidates: Network[] =
+    importNetworks && ADDRESS_RE.test(pasted) && !options.some((o) => o.asset.toLowerCase().endsWith(pasted.toLowerCase()))
+      ? importNetworks
+      : [];
+
+  async function runImport(network: Network): Promise<void> {
+    setImporting(network);
+    setImportError("");
+    try {
+      const addr = await importToken(network, pasted);
+      onChange(importValue(network, addr));
+      setOpen(false);
+    } catch (err) {
+      setImportError(apiErrorMessage(err, "Could not import this token"));
+    } finally {
+      setImporting(null);
+    }
+  }
 
   useEffect(() => {
     if (!open) return;
@@ -187,7 +257,7 @@ export default function AssetSelect({ options, value, onChange, allLabel = "All 
                 ref={searchRef}
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
-                placeholder="Search name, symbol or address"
+                placeholder={importNetworks ? "Search, or paste a contract address to import" : "Search name, symbol or address"}
                 className={`w-full rounded-lg border border-[var(--app-input-border)] bg-[var(--app-input-bg)] py-1.5 pl-8 pr-2 text-xs outline-none focus:border-accent ${ink}`}
                 aria-label="Search tokens"
                 aria-controls={listId}
@@ -196,7 +266,33 @@ export default function AssetSelect({ options, value, onChange, allLabel = "All 
             </div>
           </div>
           <ul ref={listRef} id={listId} role="listbox" aria-label="Tokens" className="max-h-72 overflow-y-auto py-1">
-            {rows.length === 0 ? <li className={`px-3 py-6 text-center text-[11px] ${soft}`}>No token matches “{query}”.</li> : null}
+            {importCandidates.map((network) => (
+              <li key={`import-${network}`} className="mx-1">
+                <button
+                  type="button"
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() => void runImport(network)}
+                  disabled={importing !== null}
+                  className="flex w-full items-center gap-2.5 rounded-lg border border-dashed border-accent/50 bg-accent/5 px-2 py-2 text-left hover:bg-accent/10 disabled:opacity-60"
+                >
+                  <span className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-accent text-white">
+                    {importing === network ? <Loader2 size={13} className="animate-spin" aria-hidden /> : <Plus size={14} aria-hidden />}
+                  </span>
+                  <span className="min-w-0 flex-1">
+                    <span className={`block text-xs font-semibold ${ink}`}>
+                      {importing === network ? "Importing…" : `Import token on ${networkLabel(network)}`}
+                    </span>
+                    <span className={`block truncate font-mono text-[10px] ${soft}`}>{pasted}</span>
+                  </span>
+                </button>
+              </li>
+            ))}
+            {importError ? <li className="px-3 py-2 text-[11px] text-danger">{importError}</li> : null}
+            {rows.length === 0 && importCandidates.length === 0 ? (
+              <li className={`px-3 py-6 text-center text-[11px] ${soft}`}>
+                No token matches “{query}”.{importNetworks ? " Paste a full contract address to import it." : ""}
+              </li>
+            ) : null}
             {rows.map((row, i) => {
               const selected = row ? row.asset === value : value === null;
               const isActive = i === active;

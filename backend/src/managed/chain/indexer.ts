@@ -287,6 +287,23 @@ export class ManagedIndexer {
     return [...networks];
   }
 
+  /**
+   * Immediate balance refresh for a network (all managed wallets x visible
+   * tokens, then every pool master). Used after a token is imported or a pool
+   * is created so balances show without waiting for the throttled full refresh.
+   */
+  async refreshBalancesNow(network: Network): Promise<void> {
+    await this.deps.balances.refreshAll(network, true);
+    for (const pool of await this.deps.pools.listActive()) {
+      if (pool.network !== network) continue;
+      try {
+        await this.deps.balances.refreshMaster(pool);
+      } catch (err) {
+        this.logger.error("master balance refresh failed", { poolId: pool.id, error: errorMessage(err) });
+      }
+    }
+  }
+
   /** One cycle: runOnce for every active network, sequentially. */
   async runAll(): Promise<IndexerRunResult[]> {
     const results: IndexerRunResult[] = [];

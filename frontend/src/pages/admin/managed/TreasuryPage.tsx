@@ -107,7 +107,13 @@ export default function TreasuryPage() {
           <p className={`mt-1 text-xs ${soft}`}>All balances across managed wallets roll up here, per token and per pool. Refreshes every 30 s{dataUpdatedAt ? ` · updated ${timeAgo(new Date(dataUpdatedAt).toISOString())}` : ""}.</p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <AssetSelect options={selectOptions} value={sel ? `${sel.network}:${sel.asset}` : null} onChange={setAssetKey} />
+          <AssetSelect
+            options={selectOptions}
+            value={sel ? `${sel.network}:${sel.asset}` : null}
+            onChange={setAssetKey}
+            importNetworks={networksInUse.size > 0 ? [...networksInUse] : ["bscMainnet", "bscTestnet"]}
+            importValue={(network, address) => `${network}:${address}`}
+          />
           <button type="button" className={ghostBtn} onClick={() => void refetch()}>
             <RefreshCw size={12} className={isFetching ? "animate-spin" : ""} /> Refresh
           </button>

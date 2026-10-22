@@ -596,12 +596,41 @@ describe.skipIf(!dbAvailable)("against the throwaway database", () => {
       expect(res.body.created.map((w: { address: string }) => w.address)).not.toContain(keyAddress);
     });
 
+    it("refuses a second pool for the same wallet and points at the existing one", async () => {
+      const again = await agent.post("/api/admin/managed/pools").send({ name: "Same key again", network: "bscMainnet", privateKey: key });
+      expect(again.status).toBe(409);
+      expect(again.body).toMatchObject({ code: "POOL_EXISTS", poolId: keyPoolId, poolName: "Key pool", network: "bscTestnet", masterAddress: keyAddress });
+      expect(JSON.stringify(again.body).toLowerCase()).not.toContain(key.slice(2).toLowerCase());
+      const count = await db.query("SELECT count(*)::int AS n FROM managed_pools WHERE lower(master_address) = lower($1)", [keyAddress]);
+      expect(count.rows[0].n).toBe(1);
+    });
+
     it("reveal returns the private key (not a mnemonic) after re-auth", async () => {
       const res = await agent.post(`/api/admin/managed/pools/${keyPoolId}/reveal-mnemonic`).send({});
       expect(res.status).toBe(200);
       expect(res.body).toMatchObject({ seedType: "PRIVATE_KEY", privateKey: key.toLowerCase(), masterAddress: keyAddress });
       expect(res.body.mnemonic).toBeUndefined();
     });
+  });
+
+  it("importing a hidden tracked token shows it again instead of failing", async () => {
+    const tokenAddress = Wallet.createRandom().address.toLowerCase();
+    const id = randomUUID();
+    await db.query(
+      `INSERT INTO managed_tokens (id, network, token_address, symbol, name, decimals, source, hidden)
+       VALUES ($1, 'bscTestnet', $2, 'HID', 'Hidden token', 18, 'TRACKED', TRUE)`,
+      [id, tokenAddress]
+    );
+    try {
+      const res = await agent.post("/api/admin/managed/tokens").send({ network: "bscTestnet", tokenAddress });
+      expect(res.status).toBe(200);
+      expect(res.body.token).toMatchObject({ id, hidden: false, symbol: "HID" });
+      const again = await agent.post("/api/admin/managed/tokens").send({ network: "bscTestnet", tokenAddress });
+      expect(again.status).toBe(409);
+      expect(again.body.code).toBe("ALREADY_TRACKED");
+    } finally {
+      await db.query("DELETE FROM managed_tokens WHERE id = $1", [id]);
+    }
   });
 
   describe("SR-08: idempotency keys are scoped per user and a reused key must match", () => {

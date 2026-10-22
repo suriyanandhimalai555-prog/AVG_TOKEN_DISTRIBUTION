@@ -131,7 +131,7 @@ export default function PoolDetailPage() {
         ))}
       </nav>
         {tab === "wallets" || tab === "deposits" ? (
-          <AssetSelect options={assetOptions} value={assetKey} onChange={setAssetKey} />
+          <AssetSelect options={assetOptions} value={assetKey} onChange={setAssetKey} importNetworks={archived ? undefined : [pool.network]} />
         ) : null}
       </div>
 

@@ -7,7 +7,9 @@ export class ManagedApiError extends Error {
   constructor(
     public readonly status: number,
     public readonly code: string,
-    message: string
+    message: string,
+    /** Extra, non-secret fields merged into the JSON body (e.g. an existing pool id). */
+    public readonly details?: Record<string, unknown>
   ) {
     super(message);
     this.name = "ManagedApiError";
@@ -26,6 +28,6 @@ export function notFound(code: string, message: string): ManagedApiError {
   return new ManagedApiError(404, code, message);
 }
 
-export function conflict(code: string, message: string): ManagedApiError {
-  return new ManagedApiError(409, code, message);
+export function conflict(code: string, message: string, details?: Record<string, unknown>): ManagedApiError {
+  return new ManagedApiError(409, code, message, details);
 }

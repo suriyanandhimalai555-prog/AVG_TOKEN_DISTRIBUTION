@@ -17,6 +17,7 @@ import type {
 } from "../types";
 import { parseNetwork, requireAddress, sanitizeToken } from "./common";
 import { ManagedApiError, badRequest, conflict, notFound, validation } from "./errors";
+import { refreshBalancesSoon } from "./indexerService";
 
 /** Token metadata is untrusted (SR-07): every response goes through sanitizeToken. */
 export async function listTokens(query: ListTokensQuery): Promise<ListTokensResponse> {
@@ -37,7 +38,16 @@ export async function trackToken(
 
   const existing = await tokens.findByAddress(network, tokenAddress);
   if (existing && existing.source === "TRACKED") {
-    throw conflict("ALREADY_TRACKED", "Token is already tracked");
+    if (!existing.hidden) throw conflict("ALREADY_TRACKED", "Token is already tracked");
+    // Importing a hidden token is a request to see it again.
+    const shown = await tokens.setHidden(existing.id, false);
+    await recordManagedAudit({
+      userId,
+      action: "TOKEN_UNHIDDEN",
+      details: { tokenId: existing.id, network, tokenAddress: existing.tokenAddress, via: "import" },
+    });
+    refreshBalancesSoon(network);
+    return { response: { token: sanitizeToken(shown ?? existing) }, created: false };
   }
 
   let code: string;
@@ -61,6 +71,7 @@ export async function trackToken(
     details: { network, tokenAddress: token.tokenAddress, symbol: token.symbol, promoted: !result.created },
   });
 
+  refreshBalancesSoon(network);
   return { response: { token }, created: result.created };
 }
 

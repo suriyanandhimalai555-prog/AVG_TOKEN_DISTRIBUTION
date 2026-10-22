@@ -19,6 +19,15 @@ export function registerIndexer(indexer: ManagedIndexer | null): void {
   registered = indexer;
 }
 
+/** Fire-and-forget balance refresh for a network; a no-op when no indexer runs here. */
+export function refreshBalancesSoon(network: Network): void {
+  const indexer = getRegisteredIndexer();
+  if (!indexer) return;
+  void indexer.refreshBalancesNow(network).catch((err: unknown) => {
+    managedLog("error", "on-demand balance refresh failed", { network, error: err });
+  });
+}
+
 export function getRegisteredIndexer(): ManagedIndexer | null {
   return registered;
 }

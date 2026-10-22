@@ -12,6 +12,8 @@ import { store } from "@/lib/store";
 import { isValidPrivateKey } from "@/lib/utils";
 import { useAuth } from "@/hooks/useAuth";
 import { useTheme } from "@/theme/ThemeProvider";
+import { useManagedEnabled } from "@/components/managed/client";
+import CreatePoolFromSetupDialog, { type SetupPoolOffer } from "@/components/managed/CreatePoolFromSetupDialog";
 
 type Network = "bscMainnet" | "bscTestnet";
 
@@ -110,6 +112,10 @@ export default function SetupPage() {
   const [msError, setMsError]   = useState("");  // manual address error
   const [loading, setLoading]   = useState(false);
   const [showConfirm, setShowConfirm] = useState(false);
+  // Admins only: after a session is initialized, offer to turn this wallet into a Managed Wallets pool.
+  const [poolOffer, setPoolOffer] = useState<SetupPoolOffer | null>(null);
+  const isAdmin = user?.role === "ADMIN";
+  const managed = useManagedEnabled({ enabled: isAdmin });
 
   // ── The effective multisender address used when creating session ─────────
   const multisenderAddress = showManualInput ? manualAddress : deployedAddress;
@@ -352,8 +358,20 @@ export default function SetupPage() {
       store.setSessionId(sessionId);
 
       const pk = privateKey.trim();
-      store.setPrivateKey(pk.startsWith("0x") ? pk : `0x${pk}`);
-      navigate("/dashboard/generate");
+      const normalizedPk = pk.startsWith("0x") ? pk : `0x${pk}`;
+      store.setPrivateKey(normalizedPk);
+      if (isAdmin && managed.ready) {
+        setPoolOffer({
+          privateKey: normalizedPk,
+          network: selectedNetwork,
+          tokenAddress: tokenAddress.trim(),
+          tokenName: walletPreview?.token?.name,
+          tokenSymbol: walletPreview?.token?.symbol,
+          walletAddress: walletPreview?.account,
+        });
+      } else {
+        navigate("/dashboard/generate");
+      }
     } catch {
       toast.error("Failed to create session");
     } finally {
@@ -929,6 +947,14 @@ export default function SetupPage() {
           </div>
         </aside>
       </form>
+
+      <CreatePoolFromSetupDialog
+        offer={poolOffer}
+        onContinue={() => {
+          setPoolOffer(null);
+          navigate("/dashboard/generate");
+        }}
+      />
 
       {showConfirm && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm dark:bg-black/70">

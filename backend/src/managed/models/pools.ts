@@ -185,6 +185,16 @@ export const pools = {
   },
 
   /** Pools are admin-global in v1 (ARCHITECTURE.md §5.6). */
+  /** Any pool (any status) whose master is this address, case-insensitive. */
+  async findByMasterAddress(masterAddress: string): Promise<PoolRecord | null> {
+    const pool = requirePool();
+    const result = await pool.query(
+      `SELECT ${POOL_SELECT} FROM managed_pools p WHERE lower(p.master_address) = lower($1) ORDER BY p.created_at LIMIT 1`,
+      [masterAddress]
+    );
+    return result.rows[0] ? mapPool(result.rows[0]) : null;
+  },
+
   async listAll(filter: { status?: PoolStatus; network?: Network } = {}): Promise<PoolRecord[]> {
     const pool = requirePool();
 
