@@ -48,7 +48,8 @@ export default function Sidebar() {
   const isAdmin = user?.role === "ADMIN";
   // Only admins query the managed-wallets health endpoint; a 404 hides the entries.
   const managed = useManagedEnabled({ enabled: isAdmin });
-  const showManaged = isAdmin && managed.enabled;
+  // Every ADMIN sees the entries unless the server kill switch is set (404).
+  const showManaged = isAdmin && !managed.switchedOff;
 
   const toastStyle = useMemo(
     () => ({

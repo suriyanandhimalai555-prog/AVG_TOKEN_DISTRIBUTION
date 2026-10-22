@@ -125,8 +125,8 @@ describe("feature flag and guards", () => {
     delete process.env.WALLET_ENCRYPTION_KEY;
   });
 
-  it("mounts nothing when MANAGED_WALLETS_ENABLED is not 'true'", async () => {
-    delete process.env.MANAGED_WALLETS_ENABLED;
+  it("mounts nothing when the kill switch MANAGED_WALLETS_ENABLED=false is set", async () => {
+    process.env.MANAGED_WALLETS_ENABLED = "false";
     const app = buildApp(() => adminUser(randomUUID()));
 
     const health = await request(app).get("/api/admin/managed/health");
@@ -134,6 +134,14 @@ describe("feature flag and guards", () => {
 
     const view = await request(app).get(`/api/view/${"a".repeat(64)}`);
     expect(view.status).toBe(404);
+  });
+
+  it("is on by default for admins when MANAGED_WALLETS_ENABLED is unset", async () => {
+    delete process.env.MANAGED_WALLETS_ENABLED;
+    const app = buildApp(() => adminUser(randomUUID()));
+    const health = await request(app).get("/api/admin/managed/health");
+    expect(health.status).toBe(200);
+    expect(health.body.enabled).toBe(true);
   });
 
   it("returns 403 for non-admins and anonymous callers when enabled", async () => {

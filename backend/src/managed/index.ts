@@ -1,8 +1,8 @@
 /**
  * Managed Wallets — entry point used by src/index.ts (ARCHITECTURE.md §2).
  *
- *   mountManagedWallets(app)  mounts /api/admin/managed and /api/view, only
- *                             when MANAGED_WALLETS_ENABLED === "true"
+ *   mountManagedWallets(app)  mounts /api/admin/managed (ADMIN only) and /api/view
+ *                             unless MANAGED_WALLETS_ENABLED is "false" (kill switch)
  *   startManagedWorkers()     starts the indexer and the transfer worker
  *   stopManagedWorkers()      awaits both on shutdown
  */
@@ -74,7 +74,7 @@ function buildRuntime(): Runtime {
   return { balances, indexer, worker };
 }
 
-/** Mounts the managed routers. A no-op when the feature flag is off (R3). */
+/** Mounts the managed routers. A no-op only when the kill switch is set. */
 export function mountManagedWallets(app: Express): void {
   if (!isManagedEnabled()) return;
 

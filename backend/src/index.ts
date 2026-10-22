@@ -257,7 +257,7 @@ app.use("/api/deploy", deployRouter);
 app.use("/api/wallet", walletRouter);
 app.use("/api/estimate", estimateRouter);
 
-// Managed wallets: mounts nothing unless MANAGED_WALLETS_ENABLED=true.
+// Managed wallets (ADMIN only): on by default; MANAGED_WALLETS_ENABLED=false turns it off.
 mountManagedWallets(app);
 
 // ─── 404 ──────────────────────────────────────────────────────────────────────
@@ -306,7 +306,7 @@ async function start(): Promise<void> {
       });
   }
 
-  // Managed wallets workers: no-op unless MANAGED_WALLETS_ENABLED=true.
+  // Managed wallets workers: start only when the feature is on and WALLET_ENCRYPTION_KEY is set.
   startManagedWorkers().catch((err: Error) => {
     console.error("[managed] worker start error:", err.message);
   });

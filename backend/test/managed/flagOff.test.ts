@@ -1,7 +1,7 @@
 /**
- * N8 QA — R3 / SPEC §7 behavioural invariants with MANAGED_WALLETS_ENABLED
- * off: nothing is mounted, no worker starts, nothing is logged. Only the
- * exact string "true" enables the feature.
+ * Kill-switch invariants: the feature is on by default (ADMIN-gated), and
+ * MANAGED_WALLETS_ENABLED set to false / 0 / off / no (any casing) turns it
+ * off: nothing is mounted, no worker starts, nothing is logged.
  *
  * The HTTP surface of the full server (health, /api/auth/me, generic 404
  * handler) is covered by the flag-off boot in TEST_PLAN.md; this file proves
@@ -19,7 +19,8 @@ vi.hoisted(() => {
 
 import { isManagedEnabled, mountManagedWallets, startManagedWorkers, stopManagedWorkers } from "../../src/managed";
 
-const OFF_VALUES: Array<string | undefined> = [undefined, "", "false", "FALSE", "TRUE", "True", "1", "yes", " true", "true "];
+const OFF_VALUES: string[] = ["false", "FALSE", "False", " false ", "0", "off", "OFF", "no", "No"];
+const ON_VALUES: Array<string | undefined> = [undefined, "", "true", "TRUE", "1", "yes", "on", " true"];
 
 function appWithFallthrough(): express.Express {
   const app = express();
@@ -36,7 +37,7 @@ function appWithFallthrough(): express.Express {
   return app;
 }
 
-describe("feature flag off", () => {
+describe("feature kill switch", () => {
   let logSpy: ReturnType<typeof vi.spyOn>;
   let errorSpy: ReturnType<typeof vi.spyOn>;
   let warnSpy: ReturnType<typeof vi.spyOn>;
@@ -53,19 +54,18 @@ describe("feature flag off", () => {
   });
 
   it.each(OFF_VALUES)("isManagedEnabled() is false for %j", (value) => {
-    if (value === undefined) delete process.env.MANAGED_WALLETS_ENABLED;
-    else process.env.MANAGED_WALLETS_ENABLED = value;
+    process.env.MANAGED_WALLETS_ENABLED = value;
     expect(isManagedEnabled()).toBe(false);
   });
 
-  it("isManagedEnabled() is true only for the exact string 'true'", () => {
-    process.env.MANAGED_WALLETS_ENABLED = "true";
+  it.each(ON_VALUES)("isManagedEnabled() is true (on by default) for %j", (value) => {
+    if (value === undefined) delete process.env.MANAGED_WALLETS_ENABLED;
+    else process.env.MANAGED_WALLETS_ENABLED = value;
     expect(isManagedEnabled()).toBe(true);
   });
 
   it.each(OFF_VALUES)("mounts nothing and logs nothing for %j", async (value) => {
-    if (value === undefined) delete process.env.MANAGED_WALLETS_ENABLED;
-    else process.env.MANAGED_WALLETS_ENABLED = value;
+    process.env.MANAGED_WALLETS_ENABLED = value;
 
     const app = appWithFallthrough();
 
@@ -86,7 +86,7 @@ describe("feature flag off", () => {
   });
 
   it("startManagedWorkers / stopManagedWorkers are silent no-ops", async () => {
-    delete process.env.MANAGED_WALLETS_ENABLED;
+    process.env.MANAGED_WALLETS_ENABLED = "false";
     await expect(startManagedWorkers()).resolves.toBeUndefined();
     await expect(stopManagedWorkers()).resolves.toBeUndefined();
     await expect(stopManagedWorkers()).resolves.toBeUndefined();

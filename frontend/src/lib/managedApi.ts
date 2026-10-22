@@ -249,9 +249,16 @@ export type ManagedApi = typeof managedApi;
 // ─── Feature-enabled hook ────────────────────────────────────────────────────
 
 export interface ManagedEnabledState {
+  /** Backend answered /health: the feature is mounted for this admin. */
   enabled: boolean;
   loading: boolean;
   health?: ManagedHealth;
+  /** Backend answered 404: the server kill switch is set (or an older backend). */
+  switchedOff: boolean;
+  /** Mounted AND the key vault is loaded AND the migration is applied. */
+  ready: boolean;
+  /** Health request failed for another reason (network, 5xx). */
+  error: boolean;
 }
 
 export const MANAGED_HEALTH_QUERY_KEY = ["managed", "health"] as const;
@@ -272,7 +279,9 @@ export function useManagedEnabled(opts: { enabled?: boolean } = {}): ManagedEnab
       } catch (err) {
         if (axios.isAxiosError(err)) {
           const s = err.response?.status;
-          if (s === 404 || s === 403) return null;
+          // 404: the route is not mounted (kill switch). Anything else, including
+          // 403 from an expired admin session, is reported as an error state.
+          if (s === 404) return null;
         }
         throw err;
       }
@@ -283,11 +292,15 @@ export function useManagedEnabled(opts: { enabled?: boolean } = {}): ManagedEnab
     refetchOnWindowFocus: false,
   });
 
-  if (!gate) return { enabled: false, loading: false };
+  if (!gate) return { enabled: false, loading: false, switchedOff: false, ready: false, error: false };
   const health = q.data ?? undefined;
+  const enabled = Boolean(health?.enabled);
   return {
-    enabled: Boolean(health?.enabled),
+    enabled,
     loading: q.isPending,
     health,
+    switchedOff: q.isSuccess && q.data === null,
+    ready: enabled && health?.keyVault === "ok" && health?.migrated === true,
+    error: q.isError,
   };
 }

@@ -19,7 +19,8 @@ export default function AdminLayout() {
   const { user } = useAuth();
   const isAdmin = user?.role === "ADMIN";
   const managed = useManagedEnabled({ enabled: isAdmin });
-  const tabs = isAdmin && managed.enabled ? [...links, ...managedLinks] : links;
+  // Every ADMIN sees the tabs unless the server kill switch is set (404).
+  const tabs = isAdmin && !managed.switchedOff ? [...links, ...managedLinks] : links;
 
   return (
     <div className="space-y-6">
