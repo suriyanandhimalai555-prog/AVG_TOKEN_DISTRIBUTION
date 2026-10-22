@@ -275,6 +275,15 @@ jobs:
             echo "🔎 Existing frontend deployment: ${FRONTEND_EXISTS}"
             echo ""
 
+            # The backend keeps running scripts, SSE streams and the Managed Wallets
+            # transfer worker in process, so it must run as exactly one pod. Pin any
+            # autoscaler on it to 1 replica (reversible; the frontend's is untouched).
+            if kubectl get hpa holderforge-backend -n "$NAMESPACE" >/dev/null 2>&1; then
+              kubectl patch hpa holderforge-backend -n "$NAMESPACE" --type merge \
+                -p '{"spec":{"minReplicas":1,"maxReplicas":1}}' >/dev/null
+              echo "📌 Backend autoscaler pinned to 1 replica."
+            fi
+
             echo "🚀 Applying backend deployment..."
 
             sed "s#__IMAGE_TAG__#${IMAGE_TAG}#g" \

@@ -33,6 +33,9 @@ COPY --from=deps /app/node_modules ./node_modules
 
 COPY --from=build /app/dist ./dist
 COPY --from=build /app/scripts ./scripts
+# The scripts run through ts-node and import shared code from src/
+# (scripts/prepare-distribution.ts and distribute.ts: src/lib/distributionBatching).
+COPY --from=build /app/src ./src
 COPY --from=build /app/contracts ./contracts
 COPY --from=build /app/hardhat.config.ts ./hardhat.config.ts
 COPY --from=build /app/tsconfig.json ./tsconfig.json
