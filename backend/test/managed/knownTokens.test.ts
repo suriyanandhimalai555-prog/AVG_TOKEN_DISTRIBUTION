@@ -5,7 +5,7 @@ const { seedTracked } = vi.hoisted(() => ({ seedTracked: vi.fn() }));
 vi.mock("../../src/managed/models/tokens", () => ({ tokens: { seedTracked } }));
 
 import { KNOWN_TOKENS } from "../../src/managed/chain/knownTokens";
-import { seedKnownTokens } from "../../src/managed/service/knownTokenService";
+import { seedKnownTokens, seedKnownTokensWhenReady, stopKnownTokenSeedRetry } from "../../src/managed/service/knownTokenService";
 
 describe("known-token catalog", () => {
   it.each(Object.entries(KNOWN_TOKENS))("%s entries are checksummed, unique and sane", (_network, list) => {
@@ -47,6 +47,54 @@ describe("seedKnownTokens", () => {
     vi.spyOn(console, "error").mockImplementation(() => undefined);
     seedTracked.mockRejectedValueOnce(Object.assign(new Error("relation does not exist"), { code: "42P01" }));
     await expect(seedKnownTokens()).resolves.toBe(0);
+    vi.restoreAllMocks();
+  });
+});
+
+describe("seedKnownTokensWhenReady", () => {
+  it("retries while the tables are missing, then stops once seeded", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    seedTracked.mockReset();
+    seedTracked
+      .mockRejectedValueOnce(Object.assign(new Error("relation does not exist"), { code: "42P01" }))
+      .mockRejectedValueOnce(Object.assign(new Error("relation does not exist"), { code: "42P01" }))
+      .mockResolvedValueOnce(20);
+
+    await seedKnownTokensWhenReady(1_000);
+    expect(seedTracked).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(seedTracked).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(seedTracked).toHaveBeenCalledTimes(3);
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(seedTracked).toHaveBeenCalledTimes(3);
+
+    stopKnownTokenSeedRetry();
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  it("does not retry other database errors, and stop cancels a pending retry", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    seedTracked.mockReset();
+    seedTracked.mockRejectedValueOnce(Object.assign(new Error("boom"), { code: "57P01" }));
+    await seedKnownTokensWhenReady(1_000);
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(seedTracked).toHaveBeenCalledTimes(1);
+
+    seedTracked.mockReset();
+    seedTracked.mockRejectedValue(Object.assign(new Error("relation does not exist"), { code: "42P01" }));
+    await seedKnownTokensWhenReady(1_000);
+    stopKnownTokenSeedRetry();
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(seedTracked).toHaveBeenCalledTimes(1);
+
+    seedTracked.mockReset();
+    vi.useRealTimers();
     vi.restoreAllMocks();
   });
 });
