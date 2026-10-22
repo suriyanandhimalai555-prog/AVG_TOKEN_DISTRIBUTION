@@ -9,7 +9,7 @@ import AddressCell from "@/components/ui/AddressCell";
 import { managedApi } from "@/components/managed/client";
 import NetworkBadge from "@/components/managed/NetworkBadge";
 import TokenBadge from "@/components/managed/TokenBadge";
-import TokenIcon from "@/components/managed/TokenIcon";
+import TokenIcon, { compareTokens } from "@/components/managed/TokenIcon";
 import DepositFeed from "@/components/managed/DepositFeed";
 import AssetSelect, { useAssetOptions, useSelectedAsset, type AssetOption } from "@/components/managed/AssetSelect";
 import { apiErrorMessage, formatUnits, isMainnet, isZeroWei, networkLabel, timeAgo } from "@/components/managed/format";
@@ -30,7 +30,7 @@ function parseKey(key: string | null): { network: Network; asset: string } | nul
 
 /** In the "all assets" view, hide zero rows but always keep the native coin. */
 function visibleTotals(totals: TreasuryTotal[]): TreasuryTotal[] {
-  return totals.filter((t) => t.asset === NATIVE_ASSET || !isZeroWei(t.totalWei));
+  return totals.filter((t) => t.asset === NATIVE_ASSET || !isZeroWei(t.totalWei)).sort(compareTokens);
 }
 
 /** F6: totals per token, master balances per pool, low-gas warning, cross-pool deposit feed. */

@@ -9,6 +9,7 @@ import { apiErrorMessage, formatBnb, formatGwei, formatInt, formatUnits, isValid
 import Modal from "./Modal";
 import JobStatusDrawer from "./JobStatusDrawer";
 import TokenBadge from "./TokenBadge";
+import { compareTokens } from "./TokenIcon";
 import { useReauth } from "./ReauthDialog";
 import { inputCls, outlineBtn, primaryBtn, useManagedTheme } from "./theme";
 
@@ -49,7 +50,7 @@ export default function TransferDialog({ open, wallet, pool, onClose, onSubmitte
     if (!list.some((b) => b.asset === NATIVE_ASSET)) {
       list.unshift({ asset: NATIVE_ASSET, symbol: nativeSymbol(pool.network), name: "BNB", decimals: 18, balanceWei: "0", balance: "0", blockNumber: null, updatedAt: null, hidden: false });
     }
-    return list;
+    return list.sort(compareTokens);
   }, [wallet, pool.network]);
   const selected = assets.find((b) => b.asset === asset) ?? assets[0];
 

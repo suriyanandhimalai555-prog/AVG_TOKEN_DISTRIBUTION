@@ -50,3 +50,36 @@ describe("seedKnownTokens", () => {
     vi.restoreAllMocks();
   });
 });
+
+describe("AVG Coin (client's preferred token)", () => {
+  it("is on mainnet with the verified address, 18 decimals, and marked preferred", () => {
+    const avg = KNOWN_TOKENS.bscMainnet.find((t) => t.symbol === "AVG");
+    expect(avg).toEqual({
+      address: "0x9D7435abdB6478198C730Ed7f4AE503e51799B8b",
+      symbol: "AVG",
+      name: "AVG Coin",
+      decimals: 18,
+      preferred: true,
+    });
+    expect(KNOWN_TOKENS.bscTestnet.some((t) => t.symbol === "AVG")).toBe(false);
+  });
+
+  it("is the only preferred token", () => {
+    const all = [...KNOWN_TOKENS.bscMainnet, ...KNOWN_TOKENS.bscTestnet];
+    expect(all.filter((t) => t.preferred).map((t) => t.symbol)).toEqual(["AVG"]);
+  });
+});
+
+describe("frontend logo map stays in sync with the catalog", () => {
+  it("every catalog address has a logo and the logo file exists", async () => {
+    const fs = await import("fs");
+    const path = await import("path");
+    const root = path.resolve(__dirname, "../../../frontend");
+    const src = fs.readFileSync(path.join(root, "src/components/managed/TokenIcon.tsx"), "utf8");
+    for (const t of [...KNOWN_TOKENS.bscMainnet, ...KNOWN_TOKENS.bscTestnet]) {
+      const m = new RegExp(`"${t.address.toLowerCase()}":\\s*"([a-z0-9-]+)"`).exec(src);
+      expect(m, `no logo mapping for ${t.symbol} ${t.address}`).not.toBeNull();
+      expect(fs.existsSync(path.join(root, "public/token-icons", `${m![1]}.png`)), `missing file for ${t.symbol}`).toBe(true);
+    }
+  });
+});

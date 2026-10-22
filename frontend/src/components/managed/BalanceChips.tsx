@@ -1,7 +1,7 @@
 import type { BalanceEntry } from "@/lib/managedTypes";
 import { formatUnits, isZeroWei } from "./format";
 import { useManagedTheme } from "./theme";
-import TokenIcon from "./TokenIcon";
+import TokenIcon, { compareTokens } from "./TokenIcon";
 
 interface BalanceChipsProps {
   balances: BalanceEntry[];
@@ -13,7 +13,9 @@ interface BalanceChipsProps {
 /** One chip per asset: "12.5 ABC". Uses symbol/decimals from the API. */
 export default function BalanceChips({ balances, hideZero = true, max = 4 }: BalanceChipsProps) {
   const { ink, bgInset } = useManagedTheme();
-  const visible = balances.filter((b) => !b.hidden && (!hideZero || b.asset === "native" || !isZeroWei(b.balanceWei)));
+  const visible = balances
+    .filter((b) => !b.hidden && (!hideZero || b.asset === "native" || !isZeroWei(b.balanceWei)))
+    .sort(compareTokens);
   if (visible.length === 0) return <span className="font-mono text-[11px] text-text-muted">—</span>;
   const shown = visible.slice(0, max);
   const rest = visible.length - shown.length;

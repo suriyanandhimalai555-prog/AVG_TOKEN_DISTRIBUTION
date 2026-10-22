@@ -11,7 +11,7 @@ import { managedApi } from "./client";
 import { apiErrorMessage, badgeStatus, formatUnits, isMainnet, isTerminalStatus, isValidAddress, isZeroWei, nativeSymbol, newIdempotencyKey } from "./format";
 import Modal from "./Modal";
 import TokenBadge from "./TokenBadge";
-import TokenIcon from "./TokenIcon";
+import TokenIcon, { compareTokens } from "./TokenIcon";
 import { useReauth } from "./ReauthDialog";
 import { inputCls, outlineBtn, primaryBtn, useManagedTheme } from "./theme";
 
@@ -71,13 +71,13 @@ export default function SweepDialog({ open, poolId, masterAddress, network, sele
     staleTime: 30_000,
   });
   const assetChoices = useMemo(
-    () => [
-      { asset: NATIVE_ASSET, symbol: nativeSymbol(network), name: "BNB" },
-      ...(tokensData?.tokens ?? [])
-        .filter((t) => !t.hidden)
-        .map((t) => ({ asset: t.tokenAddress.toLowerCase(), symbol: t.symbol, name: t.name }))
-        .sort((a, b) => a.symbol.localeCompare(b.symbol)),
-    ],
+    () =>
+      [
+        { asset: NATIVE_ASSET, symbol: nativeSymbol(network), name: "BNB" },
+        ...(tokensData?.tokens ?? [])
+          .filter((t) => !t.hidden)
+          .map((t) => ({ asset: t.tokenAddress.toLowerCase(), symbol: t.symbol, name: t.name })),
+      ].sort(compareTokens),
     [tokensData, network]
   );
 

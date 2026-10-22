@@ -6,15 +6,17 @@
  * real contracts get the real logos; every other token gets a generated badge
  * with its initials, coloured from its address.
  *
- * Logos live in /public/token-icons (official Trust Wallet assets, resized to
- * 64x64). Keep the address list in sync with backend/src/managed/chain/knownTokens.ts.
+ * Logos live in /public/token-icons, resized to 64x64: official Trust Wallet
+ * assets for public tokens, and the AVG brand mark for AVG Coin. Keep the
+ * address list in sync with backend/src/managed/chain/knownTokens.ts.
  */
 import { useState } from "react";
 import { NATIVE_ASSET, type Asset } from "@/lib/managedTypes";
 
 /** lowercase contract address → icon file name (without extension). */
 const ICON_BY_ADDRESS: Record<string, string> = {
-  // BSC mainnet
+  // BSC mainnet: AVG Coin, the client's preferred token (AVG brand mark)
+  "0x9d7435abdb6478198c730ed7f4ae503e51799b8b": "avg",
   "0x55d398326f99059ff775485246999027b3197955": "usdt",
   "0x8ac76a51cc950d9822d68b83fe1ad97b32cd580d": "usdc",
   "0xc5f0f7b66764f6ec8c8dff7ba683102295e16409": "fdusd",
@@ -36,6 +38,25 @@ const ICON_BY_ADDRESS: Record<string, string> = {
   "0xae13d989dac2f0debff460ac112a837c89baa7cd": "wbnb",
   "0xfa60d973f7642b748046464e165a65b7323b0dee": "cake",
 };
+
+/** The client's own token(s): pinned first in every list and tagged "Preferred". */
+const PREFERRED_ADDRESSES = new Set(["0x9d7435abdb6478198c730ed7f4ae503e51799b8b"]);
+
+export function isPreferredToken(asset: Asset | undefined | null): boolean {
+  if (!asset || asset === NATIVE_ASSET) return false;
+  const addr = asset.includes(":") ? asset.slice(asset.indexOf(":") + 1) : asset;
+  return PREFERRED_ADDRESSES.has(addr.toLowerCase());
+}
+
+/** Sort order used by every token list: preferred token, then native BNB, then A to Z. */
+export function compareTokens(a: { asset: Asset; symbol: string }, b: { asset: Asset; symbol: string }): number {
+  const rank = (t: { asset: Asset }): number => {
+    if (isPreferredToken(t.asset)) return 0;
+    const raw = t.asset.includes(":") ? t.asset.slice(t.asset.indexOf(":") + 1) : t.asset;
+    return raw === NATIVE_ASSET ? 1 : 2;
+  };
+  return rank(a) - rank(b) || a.symbol.localeCompare(b.symbol);
+}
 
 export function tokenIconUrl(asset: Asset | undefined | null): string | null {
   if (!asset) return null;

@@ -14,10 +14,15 @@ export interface KnownToken {
   symbol: string;
   name: string;
   decimals: number;
+  /** The client's own token: listed first in every token picker. */
+  preferred?: boolean;
 }
 
 export const KNOWN_TOKENS: Record<Network, readonly KnownToken[]> = {
   bscMainnet: [
+    // AVG Coin, the client's preferred token. On-chain name "Agilavetri Groups",
+    // 1,000,000,000 supply; verified on-chain 2026-10-22. Mainnet only (no testnet contract).
+    { address: "0x9D7435abdB6478198C730Ed7f4AE503e51799B8b", symbol: "AVG", name: "AVG Coin", decimals: 18, preferred: true },
     { address: "0x55d398326f99059fF775485246999027B3197955", symbol: "USDT", name: "Tether USD", decimals: 18 },
     { address: "0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d", symbol: "USDC", name: "USD Coin", decimals: 18 },
     { address: "0xc5f0f7b66764F6ec8C8Dff7BA683102295E16409", symbol: "FDUSD", name: "First Digital USD", decimals: 18 },

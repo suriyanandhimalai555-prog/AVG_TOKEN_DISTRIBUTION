@@ -12,7 +12,7 @@ import { NATIVE_ASSET, type Asset, type Network } from "@/lib/managedTypes";
 import { managedApi } from "./client";
 import { nativeSymbol } from "./format";
 import { useManagedTheme } from "./theme";
-import TokenIcon from "./TokenIcon";
+import TokenIcon, { compareTokens, isPreferredToken } from "./TokenIcon";
 
 export interface AssetOption {
   asset: Asset;
@@ -50,9 +50,8 @@ export function useAssetOptions(network: Network | null): { options: AssetOption
     if (!network) return [];
     const tokens = (data?.tokens ?? [])
       .filter((t) => !t.hidden)
-      .map((t) => ({ asset: t.tokenAddress.toLowerCase(), symbol: t.symbol, name: t.name, decimals: t.decimals }))
-      .sort((a, b) => a.symbol.localeCompare(b.symbol));
-    return [{ asset: NATIVE_ASSET, symbol: nativeSymbol(network), name: "BNB (native)", decimals: 18 }, ...tokens];
+      .map((t) => ({ asset: t.tokenAddress.toLowerCase(), symbol: t.symbol, name: t.name, decimals: t.decimals }));
+    return [{ asset: NATIVE_ASSET, symbol: nativeSymbol(network), name: "BNB (native)", decimals: 18 }, ...tokens].sort(compareTokens);
   }, [data, network]);
   return { options, loading: isLoading };
 }
@@ -221,9 +220,14 @@ export default function AssetSelect({ options, value, onChange, allLabel = "All 
                     </span>
                   )}
                   <span className="min-w-0 flex-1">
-                    <span className={`block truncate text-xs font-semibold ${ink}`}>{row ? row.symbol : allLabel}</span>
+                    <span className={`flex items-center gap-1.5 truncate text-xs font-semibold ${ink}`}>
+                      {row ? row.symbol : allLabel}
+                      {row && isPreferredToken(row.asset) ? (
+                        <span className="rounded-full border border-success/40 bg-success/10 px-1.5 py-px text-[9px] font-semibold uppercase tracking-wide text-success">Preferred</span>
+                      ) : null}
+                    </span>
                     <span className={`block truncate text-[10px] ${soft}`}>
-                      {row ? `${row.name} · ${hintOf(row)}` : "Every token, BNB first"}
+                      {row ? `${row.name} · ${hintOf(row)}` : "Every token in this view"}
                     </span>
                   </span>
                   {selected ? <Check size={14} className="shrink-0 text-accent" aria-hidden /> : null}
