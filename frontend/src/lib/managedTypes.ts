@@ -286,10 +286,17 @@ export interface CreatePoolRequest {
    * master; managed wallets derive from it. Mutually exclusive with `mnemonic`.
    */
   privateKey?: string;
+  /**
+   * Setup → "create a pool for this wallet": the distribution session this pool
+   * is for. The pool becomes that session's pool for "Pool wallets" generation.
+   */
+  sessionId?: string;
 }
 export interface CreatePoolResponse {
   pool: Pool;
   masterAddress: string;
+  /** The session the new pool was linked to (request's sessionId), when it applied. */
+  linkedSessionId?: string | null;
 }
 
 export interface GetPoolResponse {
@@ -334,7 +341,12 @@ export interface SessionPoolMatch {
   network: Network;
   /** Address of the session's signing wallet (the would-be pool master). */
   signingAddress: string;
+  /** The pool generation would use: picked, else linked to the session, else the newest. */
   pool: PoolSummary | null;
+  /** Every active pool of the signing wallet on the session's network, oldest first. */
+  candidates?: Array<PoolSummary & { account: number | null }>;
+  /** The pool recorded for this session (created for it in Setup, or used before). */
+  linkedPoolId?: string | null;
   reason: SessionPoolReason | null;
   remaining: number;
   needed: number;

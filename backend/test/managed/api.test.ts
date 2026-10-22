@@ -209,6 +209,27 @@ describe("feature flag and guards", () => {
       expect(res.body.code).toBe("CROSS_SITE_REQUEST");
     });
 
+    it("cross-site JSON POST from an untrusted origin → 403; from a CORS-allowed origin it passes", async () => {
+      process.env.MANAGED_WALLETS_ENABLED = "true";
+      delete process.env.WALLET_ENCRYPTION_KEY;
+      const app = buildApp(() => adminUser(randomUUID()));
+      const body = { network: "bscMainnet", tokenAddress: "0x0000000000000000000000000000000000000001" };
+
+      for (const origin of ["https://evil.example", "null"]) {
+        const res = await request(app).post("/api/admin/managed/tokens").set("Sec-Fetch-Site", "cross-site").set("Origin", origin).send(body);
+        expect(res.status).toBe(403);
+        expect(res.body.code).toBe("CROSS_SITE_REQUEST");
+      }
+
+      // A local frontend (http://localhost:5173) calling the deployed API, and the
+      // configured FRONTEND_URL, are trusted by CORS and therefore by the guard.
+      for (const origin of ["http://localhost:5173", "http://localhost:5175", "https://app.example.test"]) {
+        const res = await request(app).post("/api/admin/managed/tokens").set("Sec-Fetch-Site", "cross-site").set("Origin", origin).send(body);
+        expect(res.status).toBe(503);
+        expect(res.body.code).toBe("KEY_VAULT_UNAVAILABLE");
+      }
+    });
+
     it("normal JSON POST passes the guard (reaches the key-vault guard: 503)", async () => {
       process.env.MANAGED_WALLETS_ENABLED = "true";
       delete process.env.WALLET_ENCRYPTION_KEY;
@@ -551,11 +572,13 @@ describe.skipIf(!dbAvailable)("against the throwaway database", () => {
     const key = Wallet.createRandom().privateKey;
     const keyAddress = new Wallet(key).address;
     let keyPoolId = "";
+    /** Further pools created for the same key (account 1, 2, …). */
+    const extraPoolIds: string[] = [];
 
     afterAll(async () => {
-      if (keyPoolId) {
-        await db.query("DELETE FROM managed_audits WHERE pool_id = $1", [keyPoolId]);
-        await db.query("DELETE FROM managed_pools WHERE id = $1", [keyPoolId]);
+      for (const id of [keyPoolId, ...extraPoolIds].filter(Boolean)) {
+        await db.query("DELETE FROM managed_audits WHERE pool_id = $1", [id]);
+        await db.query("DELETE FROM managed_pools WHERE id = $1", [id]);
       }
     });
 
@@ -596,13 +619,41 @@ describe.skipIf(!dbAvailable)("against the throwaway database", () => {
       expect(res.body.created.map((w: { address: string }) => w.address)).not.toContain(keyAddress);
     });
 
-    it("refuses a second pool for the same wallet and points at the existing one", async () => {
-      const again = await agent.post("/api/admin/managed/pools").send({ name: "Same key again", network: "bscMainnet", privateKey: key });
-      expect(again.status).toBe(409);
-      expect(again.body).toMatchObject({ code: "POOL_EXISTS", poolId: keyPoolId, poolName: "Key pool", network: "bscTestnet", masterAddress: keyAddress });
-      expect(JSON.stringify(again.body).toLowerCase()).not.toContain(key.slice(2).toLowerCase());
+    it("a second and third pool for the same key get their own accounts, so their wallets never collide", async () => {
+      const seedRoot = HDNodeWallet.fromSeed(computeHmac("sha512", toUtf8Bytes("HolderForge managed wallets v1"), key));
+
+      const second = await agent.post("/api/admin/managed/pools").send({ name: "Same key again", network: "bscTestnet", privateKey: key });
+      expect(second.status).toBe(201);
+      extraPoolIds.push(second.body.pool.id);
+      expect(second.body.pool.id).not.toBe(keyPoolId);
+      expect(second.body.masterAddress).toBe(keyAddress);
+      expect(second.body.pool.accountPath).toBe("m/44'/60'/1'/0");
+      expect(JSON.stringify(second.body).toLowerCase()).not.toContain(key.slice(2).toLowerCase());
+
+      const gen = await agent.post(`/api/admin/managed/pools/${second.body.pool.id}/wallets/generate`).send({ count: 2 });
+      expect(gen.status).toBe(201);
+      const account1 = seedRoot.derivePath("m/44'/60'/1'/0");
+      expect(gen.body.created.map((w: { address: string }) => w.address)).toEqual([account1.deriveChild(1).address, account1.deriveChild(2).address]);
+      const account0 = seedRoot.derivePath("m/44'/60'/0'/0");
+      expect(gen.body.created.map((w: { address: string }) => w.address)).not.toContain(account0.deriveChild(1).address);
+
+      const third = await agent.post("/api/admin/managed/pools").send({ name: "Same key, mainnet", network: "bscMainnet", privateKey: key });
+      expect(third.status).toBe(201);
+      extraPoolIds.push(third.body.pool.id);
+      expect(third.body.pool.accountPath).toBe("m/44'/60'/2'/0");
+
       const count = await db.query("SELECT count(*)::int AS n FROM managed_pools WHERE lower(master_address) = lower($1)", [keyAddress]);
-      expect(count.rows[0].n).toBe(1);
+      expect(count.rows[0].n).toBe(3);
+    });
+
+    it("a mnemonic still backs only one pool", async () => {
+      const phrase = Mnemonic.entropyToPhrase(randomBytes(16));
+      const first = await agent.post("/api/admin/managed/pools").send({ name: "Phrase pool", network: "bscTestnet", mnemonic: phrase });
+      expect(first.status).toBe(201);
+      extraPoolIds.push(first.body.pool.id);
+      const again = await agent.post("/api/admin/managed/pools").send({ name: "Phrase again", network: "bscTestnet", mnemonic: phrase });
+      expect(again.status).toBe(409);
+      expect(again.body).toMatchObject({ code: "POOL_EXISTS", poolId: first.body.pool.id });
     });
 
     it("reveal returns the private key (not a mnemonic) after re-auth", async () => {

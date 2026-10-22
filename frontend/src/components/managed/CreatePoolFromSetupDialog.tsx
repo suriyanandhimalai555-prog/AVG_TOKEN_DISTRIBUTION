@@ -11,6 +11,7 @@ import { useNavigate } from "react-router-dom";
 import { useQueryClient } from "@tanstack/react-query";
 import { ArrowRight, CheckCircle2, KeyRound, Loader2, Wallet, AlertTriangle } from "lucide-react";
 import type { Network } from "@/lib/managedTypes";
+import { store } from "@/lib/store";
 import { managedApi } from "./client";
 import Modal from "./Modal";
 import TokenIcon from "./TokenIcon";
@@ -92,7 +93,10 @@ export default function CreatePoolFromSetupDialog({ offer, onContinue }: Props) 
       let poolNetwork: Network = offer.network;
       let existed = false;
       try {
-        const res = await managedApi.createPool({ name: poolName, network: offer.network, privateKey: offer.privateKey });
+        // A new pool every time (a key that already has pools gets the next
+        // account), linked to this Setup's session so Generate fills this pool.
+        const sessionId = store.getSessionId() || undefined;
+        const res = await managedApi.createPool({ name: poolName, network: offer.network, privateKey: offer.privateKey, sessionId });
         poolId = res.pool.id;
         masterAddress = res.masterAddress;
       } catch (err) {
@@ -213,6 +217,7 @@ export default function CreatePoolFromSetupDialog({ offer, onContinue }: Props) 
           <ul className={`space-y-1 text-[11px] ${soft}`}>
             <li>• The signing wallet you entered becomes the pool master: sweeps arrive there and gas top-ups come from it.</li>
             <li>• Managed wallets are derived from the same private key, so that key stays their only backup.</li>
+            <li>• Each pool you create here is a new pool: if this key already has pools, the new one gets its own wallet addresses.</li>
             <li>• {tokenLabel} is added to the pool's token list so its balances show everywhere.</li>
             <li>• Generate then creates this session's wallets inside the pool, so the tokens you distribute show there and the master can sweep them back.</li>
           </ul>

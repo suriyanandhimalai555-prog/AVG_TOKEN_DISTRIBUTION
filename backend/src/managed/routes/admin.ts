@@ -27,7 +27,7 @@ import { optionalInt, optionalString, requireUuid } from "../service/common";
 import { validation } from "../service/errors";
 import { indexerStatus, lastBlockByNetwork, runIndexerNow } from "../service/indexerService";
 import { createPool, getPool, listPools, revealMnemonic, updatePool } from "../service/poolService";
-import { findSessionPool, generateSessionWalletsFromPool } from "../service/sessionPoolService";
+import { findSessionPool, generateSessionWalletsFromPool, linkSessionToPool } from "../service/sessionPoolService";
 import { importSessionWallets, listImportableSessions, previewSessionImport } from "../service/sessionImportService";
 import { listTokens, setTokenHidden, trackToken } from "../service/tokenService";
 import {
@@ -155,7 +155,17 @@ export function createAdminRouter(): Router {
     requireRecentReauth,
     wrap(async (req, res) => {
       noStore(res);
-      res.status(201).json(await createPool(userId(req), req.body));
+      // Setup → "create a pool for this wallet" sends its session: the new pool
+      // becomes that session's pool. Validated before anything is created.
+      const rawSessionId = (req.body as { sessionId?: unknown } | undefined)?.sessionId;
+      const sessionId =
+        rawSessionId === undefined || rawSessionId === null || rawSessionId === ""
+          ? null
+          : requireUuid(rawSessionId, "sessionId");
+      const created = await createPool(userId(req), req.body);
+      const linkedSessionId =
+        sessionId && (await linkSessionToPool(userId(req), sessionId, created.pool.id)) ? sessionId : null;
+      res.status(201).json({ ...created, linkedSessionId });
     })
   );
 

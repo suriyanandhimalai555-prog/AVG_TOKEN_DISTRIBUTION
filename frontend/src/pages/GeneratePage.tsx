@@ -73,10 +73,12 @@ export default function GeneratePage() {
   const isAdmin = user?.role === "ADMIN";
   const managed = useManagedEnabled({ enabled: isAdmin });
   const signingKey = store.getPrivateKey();
+  // A key can back several pools; null = the session's linked pool (or the newest).
+  const [pickedPoolId, setPickedPoolId] = useState<string | null>(null);
   const { data: poolMatch } = useQuery({
     // The key is sent in the body only; it never goes into the cache key.
-    queryKey: ["managed", "session-pool", sessionId],
-    queryFn: () => managedApi.findSessionPool(sessionId, signingKey),
+    queryKey: ["managed", "session-pool", sessionId, pickedPoolId],
+    queryFn: () => managedApi.findSessionPool(sessionId, signingKey, pickedPoolId ?? undefined),
     enabled: isAdmin && managed.ready && !!sessionId && !!signingKey,
     retry: false,
     staleTime: 30_000,
@@ -145,7 +147,8 @@ export default function GeneratePage() {
   async function startPoolGenerate(pk: string) {
     setLoading(true);
     try {
-      const res = await managedApi.generateSessionFromPool(sessionId, pk);
+      // Generate into exactly the pool the card shows.
+      const res = await managedApi.generateSessionFromPool(sessionId, pk, poolMatch?.pool?.id);
       toast.success(`${fmt(res.created)} wallets created in pool “${res.pool.name}”`);
       void queryClient.invalidateQueries({ queryKey: ["wallets-preview", sessionId] });
       void queryClient.invalidateQueries({ queryKey: ["session", sessionId] });
@@ -254,7 +257,36 @@ export default function GeneratePage() {
                   detail={
                     poolUsable && poolMatch.pool ? (
                       <>
-                        Pool <span className="text-[#e8e8e8]">“{poolMatch.pool.name}”</span> · master{" "}
+                        {(poolMatch.candidates?.length ?? 0) > 1 ? (
+                          <label
+                            className="mb-1.5 flex flex-wrap items-center gap-2"
+                            onClick={(e) => e.stopPropagation()}
+                            onKeyDown={(e) => e.stopPropagation()}
+                          >
+                            <span>Pool</span>
+                            <select
+                              value={poolMatch.pool.id}
+                              disabled={isGenerating}
+                              onChange={(e) => {
+                                setPickedPoolId(e.target.value);
+                                chooseMode("MANAGED_POOL");
+                              }}
+                              className="max-w-full border border-[#1f1f23] bg-[#0b0f1f] px-2 py-1 text-[11px] text-[#e8e8e8] focus:border-[#3b82f6] focus:outline-none"
+                            >
+                              {poolMatch.candidates!.map((c) => (
+                                <option key={c.id} value={c.id}>
+                                  {c.name} · {fmt(c.walletCount)} wallets{c.account ? ` · account ${c.account}` : ""}
+                                  {c.id === poolMatch.linkedPoolId ? " · this session's pool" : ""}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                        ) : (
+                          <>
+                            Pool <span className="text-[#e8e8e8]">“{poolMatch.pool.name}”</span> ·{" "}
+                          </>
+                        )}
+                        master{" "}
                         <span className="text-[#e8e8e8]">
                           {poolMatch.pool.masterAddress.slice(0, 6)}…{poolMatch.pool.masterAddress.slice(-4)}
                         </span>{" "}

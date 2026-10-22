@@ -112,9 +112,29 @@ export function normalizePrivateKey(input: string): string | null {
   return key;
 }
 
-function privateKeyAccountNode(privateKey: string): ethers.HDNodeWallet {
+/**
+ * BIP-44 account path for the n-th pool built from the same private key.
+ * Pool 0 uses ACCOUNT_PATH (every pool created before accounts existed); each
+ * further pool for the same key takes the next account, so its wallets never
+ * collide with the earlier pools' wallets.
+ */
+export function accountPathFor(account: number): string {
+  if (!Number.isInteger(account) || account < 0 || account >= 2 ** 31) {
+    throw new Error(`invalid account number ${String(account)}`);
+  }
+  return `m/44'/60'/${account}'/0`;
+}
+
+/** Account number of a path made by accountPathFor, or null for anything else. */
+export function accountNumberOf(accountPath: string): number | null {
+  const m = /^m\/44'\/60'\/(\d+)'\/0$/.exec(accountPath);
+  return m ? Number(m[1]) : null;
+}
+
+function privateKeyAccountNode(privateKey: string, accountPath: string = ACCOUNT_PATH): ethers.HDNodeWallet {
+  if (accountNumberOf(accountPath) === null) throw new Error("invalid account path");
   const seed = ethers.computeHmac("sha512", ethers.toUtf8Bytes(PRIVATE_KEY_SEED_DOMAIN), privateKey);
-  return ethers.HDNodeWallet.fromSeed(seed).derivePath(ACCOUNT_PATH);
+  return ethers.HDNodeWallet.fromSeed(seed).derivePath(accountPath);
 }
 
 function requireKey(privateKey: string): string {
@@ -128,10 +148,20 @@ export function masterSignerFor(secret: string, kind: PoolSecretKind): ethers.Wa
   return kind === "PRIVATE_KEY" ? new ethers.Wallet(requireKey(secret)) : masterSigner(secret);
 }
 
-/** Child signer i >= 1 for either kind of pool secret. */
-export function childSignerFor(secret: string, kind: PoolSecretKind, index: number): ethers.HDNodeWallet {
+/**
+ * Child signer i >= 1 for either kind of pool secret. `accountPath` selects the
+ * pool's account for PRIVATE_KEY pools (mnemonic pools always use ACCOUNT_PATH).
+ */
+export function childSignerFor(
+  secret: string,
+  kind: PoolSecretKind,
+  index: number,
+  accountPath: string = ACCOUNT_PATH
+): ethers.HDNodeWallet {
   assertChildIndex(index);
-  return kind === "PRIVATE_KEY" ? privateKeyAccountNode(requireKey(secret)).deriveChild(index) : childSigner(secret, index);
+  return kind === "PRIVATE_KEY"
+    ? privateKeyAccountNode(requireKey(secret), accountPath).deriveChild(index)
+    : childSigner(secret, index);
 }
 
 /** Like addressesFor, for either kind of pool secret. */
@@ -139,14 +169,15 @@ export function addressesForSecret(
   secret: string,
   kind: PoolSecretKind,
   from: number,
-  to: number
+  to: number,
+  accountPath: string = ACCOUNT_PATH
 ): Array<{ index: number; address: string }> {
   if (kind === "MNEMONIC") return addressesFor(secret, from, to);
   assertChildIndex(from);
   if (!Number.isInteger(to) || to < from) {
     throw new Error(`invalid index range [${String(from)}, ${String(to)})`);
   }
-  const node = privateKeyAccountNode(requireKey(secret));
+  const node = privateKeyAccountNode(requireKey(secret), accountPath);
   const out: Array<{ index: number; address: string }> = [];
   for (let i = from; i < to; i++) out.push({ index: i, address: node.deriveChild(i).address });
   return out;

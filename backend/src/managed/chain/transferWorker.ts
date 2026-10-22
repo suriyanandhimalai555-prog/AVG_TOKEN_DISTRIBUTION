@@ -208,7 +208,7 @@ export function signersFromSecret(
   if (seedType === "PRIVATE_KEY") {
     return {
       master: new Wallet(masterSignerFor(secret, "PRIVATE_KEY").privateKey),
-      child: new Wallet(childSignerFor(secret, "PRIVATE_KEY", derivationIndex).privateKey),
+      child: new Wallet(childSignerFor(secret, "PRIVATE_KEY", derivationIndex, accountPath).privateKey),
     };
   }
   return signersFromMnemonic(secret, accountPath, derivationIndex);

@@ -34,6 +34,7 @@ const scriptsDir = vi.hoisted(() => {
 import { KNOWN_TOKENS } from "../../src/managed/chain/knownTokens";
 import { mountManagedWallets } from "../../src/managed";
 import { createPool } from "../../src/managed/service/poolService";
+import { linkSessionToPool } from "../../src/managed/service/sessionPoolService";
 import { Session } from "../../src/models/Session";
 
 async function probeDb(): Promise<boolean> {
@@ -60,6 +61,7 @@ describe.skipIf(!dbAvailable)("session → pool wiring", () => {
   const signingAddress = new EthersWallet(signingKey).address;
   const testnetToken = KNOWN_TOKENS.bscTestnet[0].address;
   const sessionIds: string[] = [];
+  const poolIds: string[] = [];
   let poolId = "";
 
   function appFor(id: string): express.Express {
@@ -101,6 +103,7 @@ describe.skipIf(!dbAvailable)("session → pool wiring", () => {
     }
     const created = await createPool(adminId, { name: "Session pool test", network: "bscTestnet", privateKey: signingKey });
     poolId = created.pool.id;
+    poolIds.push(poolId);
   });
 
   afterAll(async () => {
@@ -109,9 +112,9 @@ describe.skipIf(!dbAvailable)("session → pool wiring", () => {
       await db.query("DELETE FROM session_audits WHERE session_id = ANY($1::text[])", [sessionIds]);
       await db.query("DELETE FROM distribution_sessions WHERE id = ANY($1::text[])", [sessionIds]);
     }
-    if (poolId) {
-      await db.query("DELETE FROM managed_audits WHERE pool_id = $1", [poolId]);
-      await db.query("DELETE FROM managed_pools WHERE id = $1", [poolId]);
+    for (const id of poolIds) {
+      await db.query("DELETE FROM managed_audits WHERE pool_id = $1", [id]);
+      await db.query("DELETE FROM managed_pools WHERE id = $1", [id]);
     }
     await db.query("DELETE FROM managed_audits WHERE user_id = ANY($1::text[])", [[adminId, otherId]]);
     await db.query("DELETE FROM users WHERE id = ANY($1::text[])", [[adminId, otherId]]);
@@ -169,6 +172,51 @@ describe.skipIf(!dbAvailable)("session → pool wiring", () => {
     expect(again.body.fromIndex).toBe(res.body.toIndex + 1);
     const count = await db.query("SELECT count(*)::int AS n FROM wallets WHERE session_id = $1", [sessionId]);
     expect(count.rows[0].n).toBe(3);
+  });
+
+  it("with several pools for the key: newest by default, the linked pool wins, poolId picks", async () => {
+    const app = appFor(adminId);
+    const second = await createPool(adminId, { name: "Session pool test 2", network: "bscTestnet", privateKey: signingKey });
+    poolIds.push(second.pool.id);
+    expect(second.pool.accountPath).not.toBe("m/44'/60'/0'/0");
+
+    // No link yet: the newest pool for this wallet.
+    const s1 = await newSession("bscTestnet", 2);
+    const byDefault = await request(app).post(`/api/admin/managed/sessions/${s1}/pool`).send({ privateKey: signingKey });
+    expect(byDefault.body.pool.id).toBe(second.pool.id);
+    expect(byDefault.body.candidates.map((c: { id: string }) => c.id)).toEqual([poolId, second.pool.id]);
+    expect(byDefault.body.linkedPoolId).toBeNull();
+
+    // Setup created/linked the FIRST pool for this session: it wins over "newest".
+    const s2 = await newSession("bscTestnet", 2);
+    expect(await linkSessionToPool(adminId, s2, poolId)).toBe(true);
+    const linked = await request(app).post(`/api/admin/managed/sessions/${s2}/pool`).send({ privateKey: signingKey });
+    expect(linked.body).toMatchObject({ linkedPoolId: poolId, reason: null });
+    expect(linked.body.pool.id).toBe(poolId);
+    const gen = await request(app).post(`/api/admin/managed/sessions/${s2}/generate`).send({ privateKey: signingKey });
+    expect(gen.status).toBe(201);
+    expect(gen.body.pool.id).toBe(poolId);
+
+    // An explicit poolId picks that pool, and generating records it as the session's pool.
+    const s3 = await newSession("bscTestnet", 2);
+    const picked = await request(app).post(`/api/admin/managed/sessions/${s3}/generate`).send({ privateKey: signingKey, poolId: second.pool.id });
+    expect(picked.status).toBe(201);
+    expect(picked.body.pool.id).toBe(second.pool.id);
+    const after = await request(app).post(`/api/admin/managed/sessions/${s3}/pool`).send({ privateKey: signingKey });
+    expect(after.body.linkedPoolId).toBe(second.pool.id);
+
+    // A pool that is not this wallet's cannot be picked.
+    const foreign = await createPool(adminId, { name: "Other wallet", network: "bscTestnet", privateKey: EthersWallet.createRandom().privateKey });
+    poolIds.push(foreign.pool.id);
+    const bad = await request(app).post(`/api/admin/managed/sessions/${s3}/generate`).send({ privateKey: signingKey, poolId: foreign.pool.id });
+    expect(bad.status).toBe(409);
+    expect(bad.body.code).toBe("POOL_NOT_FOR_SESSION");
+
+    // Linking refuses another user's session and a pool on another network.
+    const otherUsers = await newSession("bscTestnet", 1, otherId);
+    expect(await linkSessionToPool(adminId, otherUsers, poolId)).toBe(false);
+    const mainnet = await newSession("bscMainnet", 1);
+    expect(await linkSessionToPool(adminId, mainnet, poolId)).toBe(false);
   });
 
   it("a signing wallet without a pool gets NO_POOL and a 409 on generate", async () => {

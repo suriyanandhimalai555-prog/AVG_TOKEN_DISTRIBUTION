@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { HDNodeWallet, Interface, Transaction, Wallet, parseUnits } from "ethers";
-import { TransferWorker, isDefiniteRejection, signersFromMnemonic } from "../../src/managed/chain/transferWorker";
+import { HDNodeWallet, Interface, Transaction, Wallet, computeHmac, parseUnits, toUtf8Bytes } from "ethers";
+import { TransferWorker, isDefiniteRejection, signersFromMnemonic, signersFromSecret } from "../../src/managed/chain/transferWorker";
 import { shortRpcError } from "../../src/managed/chain/rpc";
 import type { WorkerDeps, WorkerOptions } from "../../src/managed/chain/transferWorker";
 import type { LogMeta } from "../../src/managed/chain/ports";
@@ -872,5 +872,24 @@ describe("TransferWorker with an IMPORTED wallet", () => {
     expect(outcome.status).toBe("FAILED");
     expect(t.transfers.last()).toMatchObject({ errorCode: "KEY_VAULT_UNAVAILABLE" });
     expect(t.provider.broadcasts).toHaveLength(0);
+  });
+});
+
+describe("signersFromSecret for PRIVATE_KEY pools", () => {
+  const key = "0x" + "11".repeat(32);
+  const root = HDNodeWallet.fromSeed(computeHmac("sha512", toUtf8Bytes("HolderForge managed wallets v1"), key));
+
+  it("uses the pool's account: account 0 is unchanged, account 1 gives other wallets, master is the key", () => {
+    const a0 = signersFromSecret(key, "PRIVATE_KEY", "m/44'/60'/0'/0", 3);
+    const a1 = signersFromSecret(key, "PRIVATE_KEY", "m/44'/60'/1'/0", 3);
+    expect(a0.child.address).toBe(root.derivePath("m/44'/60'/0'/0/3").address);
+    expect(a1.child.address).toBe(root.derivePath("m/44'/60'/1'/0/3").address);
+    expect(a1.child.address).not.toBe(a0.child.address);
+    expect(a0.master.address).toBe(new Wallet(key).address);
+    expect(a1.master.address).toBe(new Wallet(key).address);
+  });
+
+  it("refuses an account path it did not create", () => {
+    expect(() => signersFromSecret(key, "PRIVATE_KEY", "m/44'/60'/0'/0/9", 1)).toThrow();
   });
 });

@@ -135,15 +135,18 @@ export const managedApi = {
 
   // Distribution sessions: generate the session's wallets inside the pool whose
   // master is the signing wallet. POST because the key goes in the body.
-  async findSessionPool(sessionId: string, privateKey: string): Promise<SessionPoolMatch> {
-    const { data } = await api.post<SessionPoolMatch>(`${ADMIN}/sessions/${encodeURIComponent(sessionId)}/pool`, { privateKey });
+  async findSessionPool(sessionId: string, privateKey: string, poolId?: string): Promise<SessionPoolMatch> {
+    const { data } = await api.post<SessionPoolMatch>(`${ADMIN}/sessions/${encodeURIComponent(sessionId)}/pool`, {
+      privateKey,
+      ...(poolId ? { poolId } : {}),
+    });
     return data;
   },
 
-  async generateSessionFromPool(sessionId: string, privateKey: string): Promise<SessionPoolGenerateResponse> {
+  async generateSessionFromPool(sessionId: string, privateKey: string, poolId?: string): Promise<SessionPoolGenerateResponse> {
     const { data } = await api.post<SessionPoolGenerateResponse>(
       `${ADMIN}/sessions/${encodeURIComponent(sessionId)}/generate`,
-      { privateKey }
+      { privateKey, ...(poolId ? { poolId } : {}) }
     );
     return data;
   },

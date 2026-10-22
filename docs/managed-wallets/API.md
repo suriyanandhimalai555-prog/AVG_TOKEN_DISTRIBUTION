@@ -104,17 +104,24 @@ The Generate step of a distribution session can use the pool whose master is
 the session's signing wallet ("Pool wallets"), so the tokens it distributes
 land in pool wallets. POST because the signing key travels in the body.
 
+A private key can back several pools: each further pool for the same key gets
+the next BIP-44 account (`accountPath` `m/44'/60'/<n>'/0`, first pool n = 0;
+migration 0006), so the pools' wallets never collide. A mnemonic still backs
+one pool (409 `POOL_EXISTS`). `POST /pools` accepts an optional `sessionId`:
+the new pool becomes that session's pool (`linkedSessionId` in the response).
+
 ### POST /sessions/:sessionId/pool
-Request `{ "privateKey": "0x…" }` (the session's signing key)
+Request `{ "privateKey": "0x…", "poolId"?: "…" }` (the session's signing key; `poolId` picks one of `candidates`).
+The pool used is `poolId`, else the session's linked pool, else the newest pool of the key on the session's network.
 Response 200 `SessionPoolMatch`
 ```json
-{ "sessionId": "…", "network": "bscTestnet", "signingAddress": "0x…", "pool": { "id": "…", "name": "…" }, "reason": null, "remaining": 9995, "needed": 5 }
+{ "sessionId": "…", "network": "bscTestnet", "signingAddress": "0x…", "pool": { "id": "…", "name": "…" }, "candidates": [{ "id": "…", "account": 0 }], "linkedPoolId": "…", "reason": null, "remaining": 9995, "needed": 5 }
 ```
 `reason` is `NO_POOL`, `NETWORK_MISMATCH`, `POOL_ARCHIVED` or `POOL_FULL` when the pool cannot be used.
 Errors: 400 `INVALID_PRIVATE_KEY`, 404 `SESSION_NOT_FOUND` (missing or another user's).
 
 ### POST /sessions/:sessionId/generate
-Request `{ "privateKey": "0x…" }`. Replaces the session's wallets with `totalWallets` new pool
+Request `{ "privateKey": "0x…", "poolId"?: "…" }`; the pool used becomes the session's linked pool. 409 `POOL_NOT_FOR_SESSION` when `poolId` is not one of the key's active pools on that network. Replaces the session's wallets with `totalWallets` new pool
 wallets (labels `Session <id> #<index>`), writes `output/wallets.csv` for prepare (empty privateKey
 column) and tracks the session token.
 Response 201 `{ "status": "done", "sessionId": "…", "pool": PoolSummary, "created": 5, "fromIndex": 1, "toIndex": 5 }`

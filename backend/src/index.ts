@@ -24,46 +24,17 @@ import paymentsRouter from "./routes/payments";
 import adminRouter from "./routes/admin";
 import { handleCoinbaseWebhook } from "./routes/paymentsWebhook";
 import { mountManagedWallets, startManagedWorkers, stopManagedWorkers } from "./managed";
+import { isAllowedOrigin } from "./lib/allowedOrigins";
 
 const app = express();
 const PORT = parseInt(process.env.PORT ?? "4000", 10);
 
 app.set("trust proxy", 1);
 
-const allowedOrigins = [
-  "http://localhost:5173",
-  "http://localhost:3000",
-  process.env.FRONTEND_URL ?? "",
-  process.env.CLIENT_URL ?? "",
-].filter(Boolean);
-
-function hostMatchesAllowed(requestOrigin: string): boolean {
-  try {
-    const req = new URL(requestOrigin);
-    const reqBase = req.hostname.replace(/^www\./i, "");
-
-    for (const allowed of allowedOrigins) {
-      const a = new URL(allowed);
-
-      if (a.hostname.replace(/^www\./i, "") === reqBase) {
-        return true;
-      }
-    }
-  } catch {
-    /* ignore malformed origin */
-  }
-
-  return false;
-}
-
 app.use(
   cors({
     origin: (origin, cb) => {
-      if (
-        !origin ||
-        allowedOrigins.includes(origin) ||
-        hostMatchesAllowed(origin)
-      ) {
+      if (!origin || isAllowedOrigin(origin)) {
         return cb(null, true);
       }
 

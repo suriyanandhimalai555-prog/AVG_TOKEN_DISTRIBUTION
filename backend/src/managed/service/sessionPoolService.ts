@@ -21,6 +21,8 @@ import { Session, type ISession } from "../../models/Session";
 import { Wallet } from "../../models/Wallet";
 import { normalizePrivateKey } from "../derive";
 import { maxWalletsPerPool, pools, type PoolRecord } from "../models/pools";
+import { sessionPools } from "../models/sessionPools";
+import { accountNumberOf } from "../derive";
 import { managedLog } from "../redact";
 import type { Network, PoolSummary } from "../types";
 import { requireString, toPoolSummary } from "./common";
@@ -34,8 +36,16 @@ export interface SessionPoolMatch {
   network: Network;
   /** Address of the session's signing wallet (the would-be pool master). */
   signingAddress: string;
-  /** The pool whose master is the signing wallet, on the session's network; null when none. */
+  /**
+   * The pool generation would use: the one picked (poolId), else the one
+   * linked to this session (created for it from Setup, or used before), else
+   * the newest pool of the signing wallet on the session's network.
+   */
   pool: PoolSummary | null;
+  /** Every ACTIVE pool of the signing wallet on the session's network, oldest first. */
+  candidates: Array<PoolSummary & { account: number | null }>;
+  /** Pool recorded for this session, if any. */
+  linkedPoolId: string | null;
   /** Why `pool` is null or cannot be used, for the Generate page hint. */
   reason: "NO_POOL" | "NETWORK_MISMATCH" | "POOL_ARCHIVED" | "POOL_FULL" | null;
   /** Free wallet slots left in the pool. */
@@ -80,25 +90,63 @@ async function resolve(
 ): Promise<{ session: ISession; match: SessionPoolMatch; record: PoolRecord | null }> {
   const session = await requireOwnSession(userId, sessionId);
   const signingAddress = signingAddressFrom(body);
-  const record = await pools.findByMasterAddress(signingAddress);
+  const requested = (body as { poolId?: unknown } | undefined)?.poolId;
   const needed = session.totalWallets;
 
+  const all = await pools.listByMasterAddress(signingAddress);
+  const candidates = all.filter((p) => p.network === session.network && p.status === "ACTIVE");
+  const linkedPoolId = await sessionPools.poolIdFor(sessionId);
+
+  let record: PoolRecord | null = null;
+  if (requested !== undefined && requested !== null && requested !== "") {
+    record = candidates.find((p) => p.id === requested) ?? null;
+    if (!record) {
+      throw conflict("POOL_NOT_FOR_SESSION", "That pool is not an active pool of this signing wallet on the session's network");
+    }
+  } else {
+    record = candidates.find((p) => p.id === linkedPoolId) ?? candidates[candidates.length - 1] ?? null;
+  }
+
   let reason: SessionPoolMatch["reason"] = null;
-  if (!record) reason = "NO_POOL";
-  else if (record.network !== session.network) reason = "NETWORK_MISMATCH";
-  else if (record.status !== "ACTIVE") reason = "POOL_ARCHIVED";
-  else if (remainingSlots(record) < needed) reason = "POOL_FULL";
+  // For the hint, show the wallet's pool on another network or the archived one.
+  let shown: PoolRecord | null = record;
+  if (!record) {
+    if (all.length === 0) reason = "NO_POOL";
+    else {
+      const otherNetwork = all.find((p) => p.network !== session.network);
+      shown = otherNetwork ?? all[all.length - 1];
+      reason = otherNetwork ? "NETWORK_MISMATCH" : "POOL_ARCHIVED";
+    }
+  } else if (remainingSlots(record) < needed) {
+    reason = "POOL_FULL";
+  }
 
   const match: SessionPoolMatch = {
     sessionId,
     network: session.network,
     signingAddress,
-    pool: record ? toPoolSummary(record) : null,
+    pool: shown ? toPoolSummary(shown) : null,
+    candidates: candidates.map((p) => ({ ...toPoolSummary(p), account: accountNumberOf(p.accountPath) })),
+    linkedPoolId,
     reason,
     remaining: record ? remainingSlots(record) : 0,
     needed,
   };
   return { session, match, record };
+}
+
+/**
+ * Records `poolId` as the pool this session generates into (Setup → "create
+ * a pool for this wallet"). Only the session's owner, and only a pool on the
+ * session's network. Returns false when the link does not apply.
+ */
+export async function linkSessionToPool(userId: string, sessionId: string, poolId: string): Promise<boolean> {
+  const session = await Session.findById(sessionId);
+  if (!session || !session.userId || String(session.userId) !== userId) return false;
+  const pool = await pools.findById(poolId);
+  if (!pool || pool.network !== session.network) return false;
+  await sessionPools.link(sessionId, poolId);
+  return true;
 }
 
 /** Which pool (if any) "Pool wallets" generation would use for this session. */
@@ -126,16 +174,16 @@ export async function generateSessionWalletsFromPool(
 ): Promise<SessionPoolGenerateResponse> {
   const { session, match, record } = await resolve(userId, sessionId, body);
 
-  if (!record || match.reason === "NO_POOL") {
-    throw conflict("NO_POOL_FOR_WALLET", "No Managed Wallets pool uses this signing wallet as master. Create one first.");
-  }
   if (match.reason === "NETWORK_MISMATCH") {
     throw conflict(
       "POOL_NETWORK_MISMATCH",
-      `The pool for this wallet is on ${record.network}, but this session distributes on ${session.network}.`
+      `The pool for this wallet is on ${match.pool?.network ?? "another network"}, but this session distributes on ${session.network}.`
     );
   }
   if (match.reason === "POOL_ARCHIVED") throw conflict("POOL_ARCHIVED", "Pool is archived");
+  if (!record || match.reason === "NO_POOL") {
+    throw conflict("NO_POOL_FOR_WALLET", "No Managed Wallets pool uses this signing wallet as master. Create one first.");
+  }
   if (match.reason === "POOL_FULL") {
     throw conflict(
       "POOL_LIMIT_REACHED",
@@ -198,6 +246,7 @@ export async function generateSessionWalletsFromPool(
       }
     }
     refreshBalancesSoon(session.network);
+    await sessionPools.link(sessionId, record.id);
 
     const fromIndex = created[0]?.derivationIndex ?? generated.nextIndex;
     const toIndex = created[created.length - 1]?.derivationIndex ?? generated.nextIndex - 1;

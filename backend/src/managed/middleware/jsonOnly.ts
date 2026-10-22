@@ -7,10 +7,13 @@
  * `Content-Type: application/json` on every non-GET request forces a preflight
  * (which the CORS allow-list already rejects), and the `Sec-Fetch-Site` check
  * stops bodiless cross-site POSTs from modern browsers before any handler runs.
+ * A cross-site request is allowed only from an origin the CORS allow-list
+ * already trusts (lib/allowedOrigins), e.g. a local frontend calling the API.
  *
  * GET/HEAD/OPTIONS pass through untouched (read-only routes).
  */
 import { RequestHandler } from "express";
+import { isAllowedOrigin } from "../../lib/allowedOrigins";
 
 const SAFE_METHODS: ReadonlySet<string> = new Set(["GET", "HEAD", "OPTIONS"]);
 
@@ -19,7 +22,10 @@ export const jsonOnlyGuard: RequestHandler = (req, res, next) => {
 
   const site = req.get("sec-fetch-site");
   if (site !== undefined && site.trim().toLowerCase() === "cross-site") {
-    return res.status(403).json({ error: "Cross-site request rejected", code: "CROSS_SITE_REQUEST" });
+    const origin = req.get("origin");
+    if (!origin || !isAllowedOrigin(origin)) {
+      return res.status(403).json({ error: "Cross-site request rejected", code: "CROSS_SITE_REQUEST" });
+    }
   }
 
   // req.is() returns null for a bodiless request and false on a mismatch; both

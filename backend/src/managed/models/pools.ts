@@ -195,6 +195,16 @@ export const pools = {
     return result.rows[0] ? mapPool(result.rows[0]) : null;
   },
 
+  /** Every pool whose master is this address (any network, any status), oldest first. */
+  async listByMasterAddress(masterAddress: string): Promise<PoolRecord[]> {
+    const pool = requirePool();
+    const result = await pool.query(
+      `SELECT ${POOL_SELECT} FROM managed_pools p WHERE lower(p.master_address) = lower($1) ORDER BY p.created_at`,
+      [masterAddress]
+    );
+    return result.rows.map(mapPool);
+  },
+
   async listAll(filter: { status?: PoolStatus; network?: Network } = {}): Promise<PoolRecord[]> {
     const pool = requirePool();
 

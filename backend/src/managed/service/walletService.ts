@@ -127,7 +127,7 @@ export async function generateWallets(
   let range: { from: number; to: number };
   try {
     range = await pools.reserveIndexes(poolId, count);
-    derived = addressesForSecret(mnemonic, pool.seedType, range.from, range.to);
+    derived = addressesForSecret(mnemonic, pool.seedType, range.from, range.to, pool.accountPath);
   } finally {
     mnemonic = "";
   }

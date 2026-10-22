@@ -4,7 +4,15 @@
  */
 import { randomUUID } from "crypto";
 import { recordManagedAudit } from "../audit";
-import { generateMnemonic, isValidMnemonic, masterSignerFor, normalizePrivateKey } from "../derive";
+import {
+  ACCOUNT_PATH,
+  accountNumberOf,
+  accountPathFor,
+  generateMnemonic,
+  isValidMnemonic,
+  masterSignerFor,
+  normalizePrivateKey,
+} from "../derive";
 import { decryptSecret, encryptSecret } from "../keyVault";
 import { deposits } from "../models/deposits";
 import { pools } from "../models/pools";
@@ -79,30 +87,47 @@ export async function createPool(
   let record: PoolRecord;
   try {
     const masterAddress = masterSignerFor(secretText, seedType).address;
-    // One pool per master wallet: the same secret derives the same managed
-    // addresses, which must stay unique across pools and networks.
-    const existing = await pools.findByMasterAddress(masterAddress);
-    if (existing) {
-      throw conflict("POOL_EXISTS", `A pool already uses this wallet: "${existing.name}"`, {
-        poolId: existing.id,
-        poolName: existing.name,
-        network: existing.network,
-        masterAddress: existing.masterAddress,
-      });
+    // Managed addresses must stay unique across pools and networks. A private
+    // key can back several pools: each further pool takes the next BIP-44
+    // account, so its wallets differ from every earlier pool's. A mnemonic's
+    // master is itself derived from the account, so it keeps one pool.
+    const existing = await pools.listByMasterAddress(masterAddress);
+    let accountPath = ACCOUNT_PATH;
+    if (existing.length > 0) {
+      if (seedType !== "PRIVATE_KEY") {
+        const first = existing[0];
+        throw conflict("POOL_EXISTS", `A pool already uses this wallet: "${first.name}"`, {
+          poolId: first.id,
+          poolName: first.name,
+          network: first.network,
+          masterAddress: first.masterAddress,
+        });
+      }
+      const used = existing.map((p) => accountNumberOf(p.accountPath)).filter((n): n is number => n !== null);
+      accountPath = accountPathFor(Math.max(-1, ...used) + 1);
     }
     const secret = encryptSecret(secretText, id);
-    record = await pools.create({
-      id,
-      ownerUserId: userId,
-      name,
-      network,
-      masterAddress,
-      mnemonicCiphertext: secret.ciphertext,
-      mnemonicIv: secret.iv,
-      mnemonicTag: secret.tag,
-      keyVersion: secret.keyVersion,
-      seedType,
-    });
+    try {
+      record = await pools.create({
+        id,
+        ownerUserId: userId,
+        name,
+        network,
+        masterAddress,
+        accountPath,
+        mnemonicCiphertext: secret.ciphertext,
+        mnemonicIv: secret.iv,
+        mnemonicTag: secret.tag,
+        keyVersion: secret.keyVersion,
+        seedType,
+      });
+    } catch (err) {
+      // Two pools for the same key created at the same moment picked the same account.
+      if ((err as { code?: string }).code === "23505") {
+        throw conflict("POOL_CREATE_CONFLICT", "Another pool for this wallet was just created; try again");
+      }
+      throw err;
+    }
   } finally {
     secretText = "";
   }
@@ -111,7 +136,14 @@ export async function createPool(
     userId,
     poolId: record.id,
     action: "POOL_CREATED",
-    details: { name, network, masterAddress: record.masterAddress, seedType, imported: hasPhrase || hasKey },
+    details: {
+      name,
+      network,
+      masterAddress: record.masterAddress,
+      seedType,
+      accountPath: record.accountPath,
+      imported: hasPhrase || hasKey,
+    },
   });
 
   refreshBalancesSoon(network);

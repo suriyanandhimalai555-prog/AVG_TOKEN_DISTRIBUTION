@@ -94,6 +94,18 @@ export default function PoolDetailPage() {
               <h1 className={`font-display text-xl font-semibold tracking-tight ${ink}`}>{pool.name}</h1>
               <NetworkBadge network={pool.network} />
               <SeedTypeBadge seedType={pool.seedType} />
+              {(() => {
+                // Further pools made from the same private key use their own BIP-44 account.
+                const account = /^m\/44'\/60'\/(\d+)'\/0$/.exec(pool.accountPath ?? "")?.[1];
+                return account && account !== "0" ? (
+                  <span
+                    className="inline-flex items-center rounded-full border border-border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-text-muted"
+                    title={`Wallets derive at ${pool.accountPath}/i. Recovery: derive-from-key --account ${account}`}
+                  >
+                    Account {account}
+                  </span>
+                ) : null;
+              })()}
               {archived ? (
                 <span className="inline-flex items-center gap-1 rounded-full border border-border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-text-muted">
                   <Archive size={10} /> Archived

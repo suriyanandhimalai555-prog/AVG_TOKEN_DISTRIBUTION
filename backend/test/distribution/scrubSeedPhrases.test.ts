@@ -72,14 +72,14 @@ if (!dbAvailable) {
 describe.skipIf(!dbAvailable)("0003_scrub_seed_phrases.sql on Postgres", () => {
   const client = new Client({ connectionString: TEST_DB_URL });
 
-  const publicFingerprint = async () =>
-    (
-      await client.query(
-        `SELECT count(*)::int AS n,
-                md5(coalesce(string_agg(id || ':' || coalesce(derivation_path, '∅'), ',' ORDER BY id), '')) AS h
-           FROM public.wallets`
+  // id → derivation_path of the shared table. Other suites add and remove their
+  // own rows in parallel, so only rows present before AND after are compared.
+  const publicSnapshot = async (): Promise<Map<string, string | null>> =>
+    new Map(
+      (await client.query("SELECT id, derivation_path FROM public.wallets")).rows.map(
+        (r) => [r.id as string, r.derivation_path as string | null] as const
       )
-    ).rows[0];
+    );
 
   const tempRows = async () =>
     (await client.query("SELECT id, derivation_path FROM wallets ORDER BY id::int")).rows.map(
@@ -95,7 +95,7 @@ describe.skipIf(!dbAvailable)("0003_scrub_seed_phrases.sql on Postgres", () => {
   });
 
   it("scrubs seed phrases and keys, keeps paths, and is idempotent", async () => {
-    const publicBefore = await publicFingerprint();
+    const publicBefore = await publicSnapshot();
 
     await client.query("BEGIN");
     try {
@@ -120,6 +120,8 @@ describe.skipIf(!dbAvailable)("0003_scrub_seed_phrases.sql on Postgres", () => {
       await client.query("ROLLBACK");
     }
 
-    expect(await publicFingerprint()).toEqual(publicBefore);
+    const publicAfter = await publicSnapshot();
+    const changed = [...publicBefore].filter(([id, path]) => publicAfter.has(id) && publicAfter.get(id) !== path);
+    expect(changed).toEqual([]);
   });
 });
