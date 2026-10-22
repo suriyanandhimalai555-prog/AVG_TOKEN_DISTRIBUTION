@@ -7,6 +7,7 @@ import { runGenerate, getScriptsDir, isRunning } from "../lib/runner";
 import { requireAuth } from "../middleware/requireAuth";
 import { requirePlan } from "../middleware/requirePlan";
 import { recordSessionAudit } from "../lib/sessionAudit";
+import { parseWalletsCsv } from "../lib/walletsCsv";
 
 const router = Router();
 
@@ -50,6 +51,18 @@ router.post("/", requireAuth, requirePlan, async (req: Request, res: Response) =
       details: { totalWallets: session.totalWallets },
     });
 
+    const onFailed = async (err: unknown) => {
+      console.error("[generate] error:", err);
+      await Session.update(sessionId, { status: "error" });
+      await recordSessionAudit({
+        userId: req.user!._id,
+        sessionId,
+        action: "GENERATE_FAILED",
+        message: "Wallet generation failed",
+        details: { error: String(err) },
+      });
+    };
+
     runGenerate(
       sessionId,
       {
@@ -63,54 +76,45 @@ router.post("/", requireAuth, requirePlan, async (req: Request, res: Response) =
         await Session.update(sessionId, { sentCount: count });
       },
       async (mnemonic) => {
-        // Store mnemonic and import wallets from the CSV the script wrote
-        await Session.update(sessionId, {
-          status: "idle",
-          masterMnemonic: mnemonic,
-        });
+        try {
+          // Store mnemonic and import wallets from the CSV the script wrote
+          await Session.update(sessionId, {
+            status: "idle",
+            masterMnemonic: mnemonic,
+          });
 
-        const csvPath = path.join(getScriptsDir(), "output", "wallets.csv");
-        if (fs.existsSync(csvPath)) {
-          const content = fs.readFileSync(csvPath, "utf8");
-          const lines = content.trim().split("\n").slice(1); // skip header
-          const docs = lines.map((line) => {
-            const [idx, address, , derivationPath] = line.split(",");
-            return {
-              sessionId,
-              index: parseInt(idx, 10),
-              address: address ?? "",
-              derivationPath: derivationPath?.trim() ?? "",
-              amount: 0,
-              amountWei: "0",
-              packedHex: "0x",
-              sent: false,
-              failed: false,
-            };
-          }).filter((d) => d.address);
+          const csvPath = path.join(getScriptsDir(), "output", "wallets.csv");
+          if (fs.existsSync(csvPath)) {
+            // Only index, address and derivationPath leave the file; never the keys or seed phrases.
+            const rows = parseWalletsCsv(fs.readFileSync(csvPath, "utf8"));
+            await Wallet.insertMany(
+              rows.map((row) => ({
+                sessionId,
+                index: row.index,
+                address: row.address,
+                derivationPath: row.derivationPath,
+                amount: 0,
+                amountWei: "0",
+                packedHex: "0x",
+                sent: false,
+                failed: false,
+              }))
+            );
+          }
 
-          await Wallet.insertMany(docs);
+          await Session.update(sessionId, { status: "idle" });
+          await recordSessionAudit({
+            userId: req.user!._id,
+            sessionId,
+            action: "GENERATE_COMPLETED",
+            message: "Wallet generation completed",
+            details: { importedWallets: session.totalWallets },
+          });
+        } catch (err) {
+          await onFailed(err);
         }
-
-        await Session.update(sessionId, { status: "idle" });
-        await recordSessionAudit({
-          userId: req.user!._id,
-          sessionId,
-          action: "GENERATE_COMPLETED",
-          message: "Wallet generation completed",
-          details: { importedWallets: session.totalWallets },
-        });
       },
-      async (err) => {
-        console.error("[generate] error:", err);
-        await Session.update(sessionId, { status: "error" });
-        await recordSessionAudit({
-          userId: req.user!._id,
-          sessionId,
-          action: "GENERATE_FAILED",
-          message: "Wallet generation failed",
-          details: { error: String(err) },
-        });
-      }
+      onFailed
     );
 
     return res.json({ status: "started", sessionId });
