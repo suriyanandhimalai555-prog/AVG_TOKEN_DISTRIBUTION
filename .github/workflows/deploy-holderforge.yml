@@ -311,10 +311,12 @@ jobs:
             echo "⏳ WAITING FOR BACKEND + FRONTEND"
             echo "=================================================="
 
+            # 300 s: pulling the new image, the backend startup probe (up to
+            # 150 s) and the old pod's 30 s graceful shutdown must all fit.
             kubectl rollout status \
               deployment/holderforge-backend \
               -n "$NAMESPACE" \
-              --timeout=60s \
+              --timeout=300s \
               > /tmp/holderforge-backend-rollout.log 2>&1 &
 
             BACKEND_ROLLOUT_PID=$!
@@ -322,7 +324,7 @@ jobs:
             kubectl rollout status \
               deployment/holderforge-frontend \
               -n "$NAMESPACE" \
-              --timeout=60s \
+              --timeout=300s \
               > /tmp/holderforge-frontend-rollout.log 2>&1 &
 
             FRONTEND_ROLLOUT_PID=$!
