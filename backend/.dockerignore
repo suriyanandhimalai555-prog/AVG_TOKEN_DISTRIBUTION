@@ -6,3 +6,8 @@ coverage
 .env
 npm-debug.log
 README.md
+# Build outputs and local secrets never go into the build context
+artifacts
+cache
+output
+.env.*

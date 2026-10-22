@@ -18,6 +18,11 @@ COPY . .
 
 RUN npm run build
 
+# Compile the contracts at build time. scripts/distribute.ts reads the ABIs
+# from artifacts/, and `hardhat run` (Deploy MultiSender) finds them up to
+# date instead of downloading a compiler inside the running pod.
+RUN npx hardhat compile
+
 
 # Production
 FROM node:22-alpine AS production
@@ -37,13 +42,17 @@ COPY --from=build /app/scripts ./scripts
 # (scripts/prepare-distribution.ts and distribute.ts: src/lib/distributionBatching).
 COPY --from=build /app/src ./src
 COPY --from=build /app/contracts ./contracts
+COPY --from=build /app/artifacts ./artifacts
+COPY --from=build /app/cache ./cache
+# The solc build Hardhat downloaded, so a recompile never needs the network.
+COPY --from=build /root/.cache/hardhat-nodejs /root/.cache/hardhat-nodejs
 COPY --from=build /app/hardhat.config.ts ./hardhat.config.ts
 COPY --from=build /app/tsconfig.json ./tsconfig.json
 COPY --from=build /app/tsconfig.build.json ./tsconfig.build.json
 COPY --from=build /app/remappings.txt ./remappings.txt
 COPY --from=build /app/migrations ./migrations
 
-RUN mkdir -p /app/output /app/cache
+RUN mkdir -p /app/output
 
 EXPOSE 4002
 
