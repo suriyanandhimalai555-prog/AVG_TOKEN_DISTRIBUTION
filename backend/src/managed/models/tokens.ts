@@ -62,8 +62,11 @@ export const tokens = {
   },
 
   /**
-   * Records a token seen by the indexer. An existing row keeps its metadata,
-   * source and hidden flag; only first_seen_block moves (to the lowest block).
+   * Records a token seen by the indexer. New discoveries start HIDDEN: anyone
+   * can send any token to a managed wallet (spam airdrops are common), so a
+   * token only shows once an admin tracks it (catalog, Import by address) or
+   * un-hides it in Settings. An existing row keeps its metadata, source and
+   * hidden flag; only first_seen_block moves (to the lowest block).
    */
   async upsertDiscovered(data: DiscoveredTokenInput): Promise<ManagedToken> {
     const pool = requirePool();
@@ -82,7 +85,7 @@ export const tokens = {
           first_seen_block,
           created_at
         )
-        VALUES ($1, $2, $3, $4, $5, $6, 'DISCOVERED', FALSE, $7, NOW())
+        VALUES ($1, $2, $3, $4, $5, $6, 'DISCOVERED', TRUE, $7, NOW())
         ON CONFLICT (network, token_address) DO UPDATE SET
           first_seen_block = LEAST(
             COALESCE(managed_tokens.first_seen_block, EXCLUDED.first_seen_block),
@@ -106,7 +109,8 @@ export const tokens = {
 
   /**
    * Adds an admin-tracked token. An existing DISCOVERED row is promoted to
-   * TRACKED with the fresh metadata; `created` tells the two cases apart.
+   * TRACKED with the fresh metadata and shown again (tracking a token is a
+   * request to see it); `created` tells the two cases apart.
    */
   async insertTracked(
     data: TrackedTokenInput
@@ -129,6 +133,7 @@ export const tokens = {
         VALUES ($1, $2, $3, $4, $5, $6, 'TRACKED', FALSE, NOW())
         ON CONFLICT (network, token_address) DO UPDATE SET
           source = 'TRACKED',
+          hidden = FALSE,
           symbol = EXCLUDED.symbol,
           name = EXCLUDED.name,
           decimals = EXCLUDED.decimals
