@@ -23,17 +23,21 @@ jobs:
           script: |
             set -u
             NS=holderforge
-            echo "=== pods ==="
-            kubectl get pods -n "$NS" -o wide
-            echo "=== backend env keys (names only) ==="
-            kubectl get secret holderforge-backend-env -n "$NS" -o jsonpath='{.data}' | tr ',' '\n' | sed -E 's/^\{?"([^"]+)".*/\1/' | sort
-            echo "=== backend: errors, warnings and route failures (last 3000 lines) ==="
-            kubectl logs deploy/holderforge-backend -n "$NS" --tail=3000 \
-              | grep -iE 'error|fail|timeout|ECONN|too many|\[sessions|\[prepare|\[generate|\[distribute|\[managed\]|PostgreSQL|pool' \
-              | grep -v 'eth_getLogs block range rejected' \
-              | tail -150
-            echo "=== backend: last 40 lines ==="
-            kubectl logs deploy/holderforge-backend -n "$NS" --tail=40
-            echo "=== previous container (if it restarted) ==="
-            POD=$(kubectl get pods -n "$NS" -l app=holderforge-backend -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
-            [ -n "$POD" ] && kubectl logs "$POD" -n "$NS" --previous --tail=60 2>/dev/null || echo "(no previous container)"
+            echo "=== deployment replicas (spec / ready) ==="
+            kubectl get deploy -n "$NS" -o custom-columns=NAME:.metadata.name,SPEC:.spec.replicas,READY:.status.readyReplicas,AVAILABLE:.status.availableReplicas
+            echo "=== autoscalers ==="
+            kubectl get hpa -n "$NS" -o wide 2>&1 || true
+            kubectl get scaledobject -n "$NS" 2>&1 | head -5 || true
+            echo "=== recent scaling / pod events ==="
+            kubectl get events -n "$NS" --sort-by=.lastTimestamp 2>/dev/null | grep -iE 'scal|replica|Created pod|Killing|OOM|BackOff|Unhealthy' | tail -25
+            echo "=== deployment last-applied replicas and managers ==="
+            kubectl get deploy holderforge-backend -n "$NS" -o jsonpath='{.metadata.annotations.kubectl\.kubernetes\.io/last-applied-configuration}' | grep -o '"replicas":[0-9]*' || true
+            kubectl get deploy holderforge-backend -n "$NS" -o jsonpath='{range .metadata.managedFields[*]}{.manager}{" "}{.operation}{" "}{.time}{"\n"}{end}'
+            echo "=== errors from EVERY backend pod (last 2000 lines each) ==="
+            for P in $(kubectl get pods -n "$NS" -l app=holderforge-backend -o jsonpath='{.items[*].metadata.name}'); do
+              echo "----- $P -----"
+              kubectl logs "$P" -n "$NS" --tail=2000 \
+                | grep -iE 'error|fail|timeout|ECONN|too many|\[sessions|\[prepare\]|\[generate|\[distribute|PostgreSQL|remaining connection|terminat' \
+                | grep -vE 'eth_getLogs block range rejected|at (createTSError|reportTSError|getOutput|Object|Module|Function|wrapModuleLoad|node:)' \
+                | tail -40
+            done
