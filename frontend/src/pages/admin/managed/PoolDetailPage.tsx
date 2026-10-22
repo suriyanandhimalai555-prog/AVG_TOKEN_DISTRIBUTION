@@ -16,12 +16,14 @@ import AssignHolderDialog from "@/components/managed/AssignHolderDialog";
 import TransferDialog from "@/components/managed/TransferDialog";
 import SweepDialog from "@/components/managed/SweepDialog";
 import DepositFeed from "@/components/managed/DepositFeed";
+import AssetSelect, { useAssetOptions, useSelectedAsset, type AssetOption } from "@/components/managed/AssetSelect";
 import TransferJobsTable from "@/components/managed/TransferJobsTable";
 import JobStatusDrawer from "@/components/managed/JobStatusDrawer";
 import RevealMnemonicModal from "@/components/managed/RevealMnemonicModal";
 import Modal from "@/components/managed/Modal";
 import { useReauth } from "@/components/managed/ReauthDialog";
-import { apiErrorMessage, fmtDateTime, hasActiveJob, isMainnet, pollingInterval, timeAgo } from "@/components/managed/format";
+import { apiErrorMessage, fmtDateTime, formatUnits, hasActiveJob, isMainnet, isZeroWei, pollingInterval, timeAgo } from "@/components/managed/format";
+import { NATIVE_ASSET } from "@/lib/managedTypes";
 import { dangerBtn, ghostBtn, inputCls, outlineBtn, primaryBtn, useManagedTheme } from "@/components/managed/theme";
 
 const TABS = ["wallets", "deposits", "transfers", "settings"] as const;
@@ -48,6 +50,16 @@ export default function PoolDetailPage() {
   const { data, isLoading, error, refetch } = useQuery({
     queryKey: ["managed", "pool", poolId],
     queryFn: () => managedApi.getPool(poolId),
+    enabled: Boolean(poolId),
+    refetchInterval: 30000,
+  });
+
+  const [assetKey, setAssetKey] = useSelectedAsset();
+  const { options: assetOptions } = useAssetOptions(data?.pool.network ?? null);
+  const selectedAsset: AssetOption | null = assetKey ? (assetOptions.find((o) => o.asset === assetKey) ?? null) : null;
+  const { data: treasury } = useQuery({
+    queryKey: ["managed", "treasury", "pool", poolId],
+    queryFn: () => managedApi.getPoolTreasury(poolId),
     enabled: Boolean(poolId),
     refetchInterval: 30000,
   });
@@ -97,12 +109,13 @@ export default function PoolDetailPage() {
 
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
         <StatCard label="Wallets" value={stats.wallets} accent />
-        <StatCard label="Assets with balance" value={stats.assetsTracked} />
+        <AssetStatCard treasury={treasury} asset={selectedAsset} wallets={stats.wallets} />
         <StatCard label="Last deposit" value={timeAgo(stats.lastDepositAt)} sub={stats.lastDepositAt ? fmtDateTime(stats.lastDepositAt) : "none yet"} />
         <StatCard label="Next index" value={pool.nextIndex} sub={`${(MAX_WALLETS_PER_POOL - (pool.nextIndex - 1)).toLocaleString()} remaining`} />
       </div>
 
-      <nav className="flex flex-wrap gap-2 border-b border-border pb-3">
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border pb-3">
+      <nav className="flex flex-wrap gap-2">
         {TABS.map((t) => (
           <button
             key={t}
@@ -114,9 +127,13 @@ export default function PoolDetailPage() {
           </button>
         ))}
       </nav>
+        {tab === "wallets" || tab === "deposits" ? (
+          <AssetSelect options={assetOptions} value={assetKey} onChange={setAssetKey} />
+        ) : null}
+      </div>
 
-      {tab === "wallets" ? <WalletsTab poolId={poolId} pool={pool} archived={archived} onChanged={invalidatePool} /> : null}
-      {tab === "deposits" ? <DepositsTab poolId={poolId} mainnet={isMainnet(pool.network)} /> : null}
+      {tab === "wallets" ? <WalletsTab poolId={poolId} pool={pool} archived={archived} onChanged={invalidatePool} asset={selectedAsset} /> : null}
+      {tab === "deposits" ? <DepositsTab poolId={poolId} mainnet={isMainnet(pool.network)} asset={selectedAsset} /> : null}
       {tab === "transfers" ? <TransfersTab poolId={poolId} mainnet={isMainnet(pool.network)} /> : null}
       {tab === "settings" ? <SettingsTab poolId={poolId} pool={pool} onChanged={invalidatePool} /> : null}
     </div>
@@ -125,7 +142,7 @@ export default function PoolDetailPage() {
 
 // ─── Wallets tab (F2) ────────────────────────────────────────────────────────
 
-function WalletsTab({ poolId, pool, archived, onChanged }: { poolId: string; pool: { masterAddress: string; network: "bscMainnet" | "bscTestnet"; nextIndex: number }; archived: boolean; onChanged: () => void }) {
+function WalletsTab({ poolId, pool, archived, onChanged, asset }: { poolId: string; pool: { masterAddress: string; network: "bscMainnet" | "bscTestnet"; nextIndex: number }; archived: boolean; onChanged: () => void; asset: AssetOption | null }) {
   const { soft, bgInset } = useManagedTheme();
   const qc = useQueryClient();
   const [search, setSearch] = useState("");
@@ -239,6 +256,7 @@ function WalletsTab({ poolId, pool, archived, onChanged }: { poolId: string; poo
           onTransfer={setTransferring}
           onRotate={rotate}
           readOnly={archived}
+          asset={asset}
         />
         <div className={`flex items-center justify-between border-t border-border px-4 py-2 text-[11px] font-mono ${soft}`}>
           <span>
@@ -258,7 +276,7 @@ function WalletsTab({ poolId, pool, archived, onChanged }: { poolId: string; poo
       <GenerateWalletsDialog open={showGenerate} poolId={poolId} remaining={remaining} nextIndex={pool.nextIndex} onClose={() => setShowGenerate(false)} onGenerated={refreshWallets} />
       <AssignHolderDialog open={assigning !== null} wallet={assigning} onClose={() => setAssigning(null)} onSaved={refreshWallets} />
       <TransferDialog open={transferring !== null} wallet={transferring} pool={{ masterAddress: pool.masterAddress, network: pool.network }} onClose={() => setTransferring(null)} />
-      <SweepDialog open={showSweep} poolId={poolId} masterAddress={pool.masterAddress} network={pool.network} selectedWalletIds={[...selected]} onClose={() => setShowSweep(false)} />
+      <SweepDialog open={showSweep} poolId={poolId} masterAddress={pool.masterAddress} network={pool.network} selectedWalletIds={[...selected]} initialAsset={asset?.asset ?? null} onClose={() => setShowSweep(false)} />
       {reauthDialog}
     </div>
   );
@@ -266,12 +284,14 @@ function WalletsTab({ poolId, pool, archived, onChanged }: { poolId: string; poo
 
 // ─── Deposits tab (F3) ───────────────────────────────────────────────────────
 
-function DepositsTab({ poolId, mainnet }: { poolId: string; mainnet: boolean }) {
+function DepositsTab({ poolId, mainnet, asset }: { poolId: string; mainnet: boolean; asset: AssetOption | null }) {
   const { soft, bgInset } = useManagedTheme();
   const [page, setPage] = useState(0);
+  const tokenFilter = asset && asset.asset !== NATIVE_ASSET ? asset.asset : undefined;
+  useEffect(() => setPage(0), [tokenFilter]);
   const { data, isLoading, isFetching, refetch } = useQuery({
-    queryKey: ["managed", "deposits", poolId, page],
-    queryFn: () => managedApi.listDeposits(poolId, { skip: page * PAGE, limit: PAGE }),
+    queryKey: ["managed", "deposits", poolId, page, tokenFilter ?? "all"],
+    queryFn: () => managedApi.listDeposits(poolId, { skip: page * PAGE, limit: PAGE, asset: tokenFilter }),
     refetchInterval: 30000,
     placeholderData: (prev) => prev,
   });
@@ -280,12 +300,20 @@ function DepositsTab({ poolId, mainnet }: { poolId: string; mainnet: boolean }) 
   return (
     <div className="dash-card overflow-hidden">
       <div className={`flex items-center justify-between border-b border-border px-4 py-2 ${bgInset}`}>
-        <p className={`text-[10px] font-mono uppercase tracking-widest ${soft}`}>Token deposits · {total.toLocaleString()}</p>
+        <p className={`text-[10px] font-mono uppercase tracking-widest ${soft}`}>
+          {tokenFilter ? `${asset?.symbol} deposits` : "Token deposits"} · {total.toLocaleString()}
+        </p>
         <button type="button" className={ghostBtn} onClick={() => void refetch()}>
           <RefreshCw size={12} className={isFetching ? "animate-spin" : ""} />
         </button>
       </div>
-      <DepositFeed deposits={data?.deposits ?? []} mainnet={mainnet} loading={isLoading} />
+      {asset?.asset === NATIVE_ASSET ? (
+        <p className={`px-4 py-8 text-center text-[11px] ${soft}`}>
+          Native {asset.symbol} deposits are not itemized; they show up as balance changes in the Wallets tab. Pick a token to filter its deposits.
+        </p>
+      ) : (
+        <DepositFeed deposits={data?.deposits ?? []} mainnet={mainnet} loading={isLoading} />
+      )}
       <div className={`flex items-center justify-between border-t border-border px-4 py-2 text-[11px] font-mono ${soft}`}>
         <span>Native BNB deposits are not itemized; they appear as balance changes.</span>
         <div className="flex gap-2">
@@ -512,5 +540,34 @@ function SettingsTab({ poolId, pool, onChanged }: { poolId: string; pool: { name
       <RevealMnemonicModal open={reveal !== null} mnemonic={reveal?.mnemonic ?? ""} masterAddress={pool.masterAddress} accountPath={reveal?.accountPath} mode="reveal" onClose={() => setReveal(null)} />
       {reauthDialog}
     </div>
+  );
+}
+
+// ─── Asset stat card (follows the token selector) ────────────────────────────
+
+function AssetStatCard({
+  treasury,
+  asset,
+  wallets,
+}: {
+  treasury: { totals: Array<{ asset: string; totalWei: string; decimals: number; walletsWithBalance: number }> } | undefined;
+  asset: AssetOption | null;
+  wallets: number;
+}) {
+  const totals = treasury?.totals ?? [];
+  if (!asset) {
+    const held = totals.filter((t) => !isZeroWei(t.totalWei)).length;
+    return <StatCard label="Assets with balance" value={treasury ? held : "—"} sub="pick a token to see its total" />;
+  }
+  const row = totals.find((t) => t.asset.toLowerCase() === asset.asset);
+  const wei = row?.totalWei ?? "0";
+  const holders = row?.walletsWithBalance ?? 0;
+  return (
+    <StatCard
+      label={`Total ${asset.symbol}`}
+      value={treasury ? formatUnits(wei, row?.decimals ?? asset.decimals, 8) : "—"}
+      sub={`${holders.toLocaleString()} of ${wallets.toLocaleString()} wallet${wallets === 1 ? "" : "s"} hold${holders === 1 ? "s" : ""} it`}
+      accent={!isZeroWei(wei)}
+    />
   );
 }

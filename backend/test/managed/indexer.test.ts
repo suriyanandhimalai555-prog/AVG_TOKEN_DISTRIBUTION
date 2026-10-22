@@ -6,6 +6,8 @@ import {
   decodeTransferLog,
   isTransientStoreError,
   padAddressTopic,
+  shrinkSpanOnRangeError,
+  MIN_LOG_BLOCK_SPAN,
 } from "../../src/managed/chain/indexer";
 import type { IndexerOptions } from "../../src/managed/chain/indexer";
 import type { BalanceRefresher, DirtyPair } from "../../src/managed/chain/balances";
@@ -539,5 +541,63 @@ describe("ManagedIndexer.runOnce", () => {
     const [a, b] = await Promise.all([t.indexer.runOnce(NETWORK), t.indexer.runOnce(NETWORK)]);
     expect(a).toBe(b);
     expect(t.provider.getLogsCalls).toHaveLength(1);
+  });
+});
+
+// ─── Provider block-range limits (Alchemy Free tier: 10 blocks) ──────────────
+
+const ALCHEMY_RANGE_ERROR = () =>
+  Object.assign(new Error("could not coalesce error"), {
+    code: "UNKNOWN_ERROR",
+    shortMessage: "could not coalesce error",
+    error: {
+      code: -32600,
+      message:
+        "Under the Free tier plan, you can make eth_getLogs requests with up to a 10 block range. Upgrade to PAYG for expanded block range.",
+    },
+  });
+
+describe("shrinkSpanOnRangeError", () => {
+  it("shrinks by 10x down to the minimum on range-limit errors", () => {
+    expect(shrinkSpanOnRangeError(ALCHEMY_RANGE_ERROR(), 1000)).toBe(100);
+    expect(shrinkSpanOnRangeError(ALCHEMY_RANGE_ERROR(), 100)).toBe(MIN_LOG_BLOCK_SPAN);
+    expect(shrinkSpanOnRangeError(new Error("query returned more than 10000 results"), 50)).toBe(MIN_LOG_BLOCK_SPAN);
+    expect(shrinkSpanOnRangeError(new Error("limit exceeded"), 1000)).toBe(100);
+  });
+  it("returns null at the minimum span and for unrelated errors", () => {
+    expect(shrinkSpanOnRangeError(ALCHEMY_RANGE_ERROR(), MIN_LOG_BLOCK_SPAN)).toBeNull();
+    expect(shrinkSpanOnRangeError(new Error("429 Too Many Requests"), 1000)).toBeNull();
+    expect(shrinkSpanOnRangeError(new Error("connection reset"), 1000)).toBeNull();
+  });
+});
+
+describe("indexer on a provider that caps eth_getLogs at 10 blocks", () => {
+  it("shrinks the span, finishes the scan, and keeps the smaller span for later runs", async () => {
+    const t = build(900); // scan 901..1001: 101 blocks, above the 10-block cap
+    const original = t.provider.getLogs.bind(t.provider);
+    t.provider.getLogs = async (filter: LogFilter) => {
+      if (filter.toBlock - filter.fromBlock + 1 > 10) {
+        t.provider.getLogsCalls.push(filter);
+        throw ALCHEMY_RANGE_ERROR();
+      }
+      return original(filter);
+    };
+    const result = await t.indexer.runOnce(NETWORK);
+    expect(result.error).toBeNull();
+    expect(result.depositsInserted).toBe(3);
+    expect(result.scannedTo).toBe(1001);
+    const rejected = t.provider.getLogsCalls.filter((f) => f.toBlock - f.fromBlock + 1 > 10);
+    const accepted = t.provider.getLogsCalls.filter((f) => f.toBlock - f.fromBlock + 1 <= 10);
+    expect(rejected.length).toBeGreaterThan(0); // the limit was really hit
+    expect(accepted.length).toBeGreaterThan(0);
+
+    // Next run starts directly at the small span: no rejected calls.
+    t.provider.latest += 20;
+    t.advance(60_000);
+    const before = t.provider.getLogsCalls.length;
+    await t.indexer.runOnce(NETWORK);
+    const later = t.provider.getLogsCalls.slice(before);
+    expect(later.length).toBeGreaterThan(0);
+    expect(later.every((f) => f.toBlock - f.fromBlock + 1 <= 10)).toBe(true);
   });
 });

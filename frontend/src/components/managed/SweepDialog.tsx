@@ -21,6 +21,8 @@ interface SweepDialogProps {
   network: Network;
   /** Row selection from the wallet table (may be empty). */
   selectedWalletIds: string[];
+  /** Token chosen in the page's selector; when set, the dialog starts on "Pick" with it ticked. */
+  initialAsset?: Asset | null;
   onClose: () => void;
 }
 
@@ -32,7 +34,7 @@ const SCAN_LIMIT = 500;
  * F8 / Flow 6: wallets (all with balance / selected) → assets (all discovered / pick)
  * → destination → review (job count) → re-auth → POST /transfers/sweep → batch progress.
  */
-export default function SweepDialog({ open, poolId, masterAddress, network, selectedWalletIds, onClose }: SweepDialogProps) {
+export default function SweepDialog({ open, poolId, masterAddress, network, selectedWalletIds, initialAsset = null, onClose }: SweepDialogProps) {
   const { ink, soft, bgInset, hoverInset, rowZebra } = useManagedTheme();
   const qc = useQueryClient();
   const [step, setStep] = useState<Step>(1);
@@ -50,15 +52,15 @@ export default function SweepDialog({ open, poolId, masterAddress, network, sele
     if (open) {
       setStep(1);
       setWalletMode(selectedWalletIds.length > 0 ? "SELECTED" : "ALL");
-      setAssetMode("ALL");
-      setPicked(new Set());
+      setAssetMode(initialAsset ? "PICK" : "ALL");
+      setPicked(new Set(initialAsset ? [initialAsset] : []));
       setTo(masterAddress);
       setSubmitting(false);
       setBatchId(null);
       setCreated(null);
       idemRef.current = newIdempotencyKey();
     }
-  }, [open, masterAddress, selectedWalletIds.length]);
+  }, [open, masterAddress, selectedWalletIds.length, initialAsset]);
 
   // Discovered + tracked tokens on this network for the asset picker.
   const { data: tokensData } = useQuery({
@@ -70,7 +72,10 @@ export default function SweepDialog({ open, poolId, masterAddress, network, sele
   const assetChoices = useMemo(
     () => [
       { asset: NATIVE_ASSET, symbol: nativeSymbol(network), name: "BNB" },
-      ...(tokensData?.tokens ?? []).map((t) => ({ asset: t.tokenAddress, symbol: t.symbol, name: t.name })),
+      ...(tokensData?.tokens ?? [])
+        .filter((t) => !t.hidden)
+        .map((t) => ({ asset: t.tokenAddress.toLowerCase(), symbol: t.symbol, name: t.name }))
+        .sort((a, b) => a.symbol.localeCompare(b.symbol)),
     ],
     [tokensData, network]
   );
@@ -218,7 +223,7 @@ export default function SweepDialog({ open, poolId, masterAddress, network, sele
             <section>
               <p className="dash-section-title mb-1.5">Assets</p>
               <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-                <Choice active={assetMode === "ALL"} onClick={() => setAssetMode("ALL")} hover={hoverInset} title="All discovered" desc="BNB plus every visible token seen on these wallets." ink={ink} soft={soft} />
+                <Choice active={assetMode === "ALL"} onClick={() => setAssetMode("ALL")} hover={hoverInset} title="All assets" desc="BNB plus every tracked token (USDT, USDC, ETH…) these wallets hold." ink={ink} soft={soft} />
                 <Choice active={assetMode === "PICK"} onClick={() => setAssetMode("PICK")} hover={hoverInset} title="Pick assets" desc="Choose which assets to sweep." ink={ink} soft={soft} />
               </div>
               {assetMode === "PICK" ? (
@@ -238,13 +243,13 @@ export default function SweepDialog({ open, poolId, masterAddress, network, sele
                           })
                         }
                         className={`rounded-full border px-2 py-1 text-[11px] font-mono transition ${on ? "border-accent bg-accent/15 text-accent" : `border-border ${soft} ${hoverInset}`}`}
-                        title={a.name}
+                        title={a.asset === NATIVE_ASSET ? a.name : `${a.name} · ${a.asset}`}
                       >
                         {a.symbol}
                       </button>
                     );
                   })}
-                  {assetChoices.length <= 1 ? <span className={`text-[11px] ${soft}`}>No tokens discovered on this network yet.</span> : null}
+                  {assetChoices.length <= 1 ? <span className={`text-[11px] ${soft}`}>Loading tokens…</span> : null}
                 </div>
               ) : null}
             </section>

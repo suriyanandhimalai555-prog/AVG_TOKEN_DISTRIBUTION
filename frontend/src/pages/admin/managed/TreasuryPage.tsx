@@ -2,7 +2,7 @@ import { useMemo } from "react";
 import { Link } from "react-router-dom";
 import { useQueries, useQuery } from "@tanstack/react-query";
 import { AlertTriangle, Fuel, RefreshCw, Loader2 } from "lucide-react";
-import type { Deposit, Network } from "@/lib/managedTypes";
+import { NATIVE_ASSET, type Deposit, type Network, type TreasuryTotal } from "@/lib/managedTypes";
 import RouteErrorFallback from "@/components/RouteErrorFallback";
 import StatCard from "@/components/ui/StatCard";
 import AddressCell from "@/components/ui/AddressCell";
@@ -10,10 +10,27 @@ import { managedApi } from "@/components/managed/client";
 import NetworkBadge from "@/components/managed/NetworkBadge";
 import TokenBadge from "@/components/managed/TokenBadge";
 import DepositFeed from "@/components/managed/DepositFeed";
-import { apiErrorMessage, formatUnits, isMainnet, networkLabel, timeAgo } from "@/components/managed/format";
+import AssetSelect, { useAssetOptions, useSelectedAsset, type AssetOption } from "@/components/managed/AssetSelect";
+import { apiErrorMessage, formatUnits, isMainnet, isZeroWei, networkLabel, timeAgo } from "@/components/managed/format";
 import { ghostBtn, tdCls, thCls, useManagedTheme } from "@/components/managed/theme";
 
 const FEED_LIMIT = 50;
+
+/** Treasury selection key: "<network>:<asset>". */
+function parseKey(key: string | null): { network: Network; asset: string } | null {
+  if (!key) return null;
+  const i = key.indexOf(":");
+  if (i < 0) return null;
+  const network = key.slice(0, i);
+  if (network !== "bscMainnet" && network !== "bscTestnet") return null;
+  const asset = key.slice(i + 1);
+  return { network, asset: asset === NATIVE_ASSET ? asset : asset.toLowerCase() };
+}
+
+/** In the "all assets" view, hide zero rows but always keep the native coin. */
+function visibleTotals(totals: TreasuryTotal[]): TreasuryTotal[] {
+  return totals.filter((t) => t.asset === NATIVE_ASSET || !isZeroWei(t.totalWei));
+}
 
 /** F6: totals per token, master balances per pool, low-gas warning, cross-pool deposit feed. */
 export default function TreasuryPage() {
@@ -32,6 +49,23 @@ export default function TreasuryPage() {
   const poolName = useMemo(() => new Map((poolsData?.pools ?? []).map((p) => [p.id, p.name])), [poolsData]);
   const poolNetwork = useMemo(() => new Map((data?.byPool ?? []).map((p) => [p.poolId, p.network])), [data]);
 
+  // Token selector: one list across both networks, keyed "<network>:<asset>".
+  const [assetKey, setAssetKey] = useSelectedAsset();
+  const sel = parseKey(assetKey);
+  const { options: mainOpts } = useAssetOptions("bscMainnet");
+  const { options: testOpts } = useAssetOptions("bscTestnet");
+  const networksInUse = useMemo(() => new Set((data?.byPool ?? []).map((p) => p.network)), [data]);
+  const selectOptions: AssetOption[] = useMemo(() => {
+    const tag = (network: Network, list: AssetOption[]): AssetOption[] =>
+      list.map((o) => ({ ...o, asset: `${network}:${o.asset}`, hint: network === "bscMainnet" ? "Mainnet" : "Testnet" }));
+    const out: AssetOption[] = [];
+    if (networksInUse.size === 0 || networksInUse.has("bscMainnet")) out.push(...tag("bscMainnet", mainOpts));
+    if (networksInUse.size === 0 || networksInUse.has("bscTestnet")) out.push(...tag("bscTestnet", testOpts));
+    return out;
+  }, [mainOpts, testOpts, networksInUse]);
+  const selOption = sel ? (sel.network === "bscMainnet" ? mainOpts : testOpts).find((o) => o.asset === sel.asset) ?? null : null;
+  const zeroRow = (o: AssetOption): TreasuryTotal => ({ asset: o.asset, symbol: o.symbol, name: o.name, decimals: o.decimals, totalWei: "0", total: "0", walletsWithBalance: 0 });
+
   // Cross-pool deposit feed: last 50 per pool, merged and trimmed to 50.
   const depositQueries = useQueries({
     queries: (data?.byPool ?? []).map((p) => ({
@@ -48,15 +82,20 @@ export default function TreasuryPage() {
       for (const d of q.data.deposits) out.push({ ...d, poolId });
     });
     out.sort((a, b) => ((a.blockTime ?? a.createdAt) < (b.blockTime ?? b.createdAt) ? 1 : -1));
-    return out.slice(0, FEED_LIMIT);
-  }, [depositQueries, data]);
+    const filtered = sel
+      ? out.filter((d) => poolNetwork.get(d.poolId) === sel.network && d.asset.toLowerCase() === sel.asset)
+      : out;
+    return filtered.slice(0, FEED_LIMIT);
+  }, [depositQueries, data, sel?.network, sel?.asset, poolNetwork]);
   const feedLoading = depositQueries.some((q) => q.isLoading);
   const walletIdPool = useMemo(() => new Map(feed.map((d) => [d.id, d.poolId])), [feed]);
 
   if (error) return <RouteErrorFallback message={apiErrorMessage(error, "Unable to load the treasury.")} onRetry={() => void refetch()} />;
 
   const lowGasPools = (data?.byPool ?? []).filter((p) => p.lowGas);
-  const assetCount = new Set((data?.totalsByNetwork ?? []).flatMap((n) => n.totals.map((t) => `${n.network}:${t.asset}`))).size;
+  const assetCount = new Set(
+    (data?.totalsByNetwork ?? []).flatMap((n) => n.totals.filter((t) => !isZeroWei(t.totalWei)).map((t) => `${n.network}:${t.asset}`))
+  ).size;
 
   return (
     <div className="space-y-5">
@@ -66,9 +105,12 @@ export default function TreasuryPage() {
           <h1 className={`mt-1 font-display text-xl font-semibold tracking-tight ${ink}`}>Treasury</h1>
           <p className={`mt-1 text-xs ${soft}`}>All balances across managed wallets roll up here, per token and per pool. Refreshes every 30 s{dataUpdatedAt ? ` · updated ${timeAgo(new Date(dataUpdatedAt).toISOString())}` : ""}.</p>
         </div>
-        <button type="button" className={ghostBtn} onClick={() => void refetch()}>
-          <RefreshCw size={12} className={isFetching ? "animate-spin" : ""} /> Refresh
-        </button>
+        <div className="flex flex-wrap items-center gap-2">
+          <AssetSelect options={selectOptions} value={sel ? `${sel.network}:${sel.asset}` : null} onChange={setAssetKey} />
+          <button type="button" className={ghostBtn} onClick={() => void refetch()}>
+            <RefreshCw size={12} className={isFetching ? "animate-spin" : ""} /> Refresh
+          </button>
+        </div>
       </div>
 
       {lowGasPools.length > 0 ? (
@@ -96,7 +138,21 @@ export default function TreasuryPage() {
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
         <StatCard label="Active pools" value={data?.poolCount ?? 0} accent />
         <StatCard label="Managed wallets" value={data?.walletCount ?? 0} />
-        <StatCard label="Assets held" value={assetCount} />
+        {sel && selOption ? (
+          (() => {
+            const row = (data?.totalsByNetwork ?? []).find((n) => n.network === sel.network)?.totals.find((t) => t.asset.toLowerCase() === sel.asset);
+            return (
+              <StatCard
+                label={`Total ${selOption.symbol}`}
+                value={formatUnits(row?.totalWei ?? "0", row?.decimals ?? selOption.decimals, 8)}
+                sub={`${(row?.walletsWithBalance ?? 0).toLocaleString()} wallet${(row?.walletsWithBalance ?? 0) === 1 ? " holds" : "s hold"} it · ${networkLabel(sel.network)}`}
+                accent={!isZeroWei(row?.totalWei ?? "0")}
+              />
+            );
+          })()
+        ) : (
+          <StatCard label="Assets held" value={assetCount} sub="pick a token to see its total" />
+        )}
         <StatCard label="Low-gas masters" value={lowGasPools.length} sub={lowGasPools.length ? "needs BNB" : "all funded"} />
       </div>
 
@@ -115,7 +171,15 @@ export default function TreasuryPage() {
           {(data?.totalsByNetwork ?? []).length === 0 && !isLoading ? (
             <p className={`px-4 py-8 text-center text-[11px] ${soft}`}>No balances yet.</p>
           ) : (
-            (data?.totalsByNetwork ?? []).map((n) => (
+            (data?.totalsByNetwork ?? [])
+              .filter((n) => !sel || n.network === sel.network)
+              .map((raw) => ({
+                network: raw.network,
+                totals: sel
+                  ? [raw.totals.find((t) => t.asset.toLowerCase() === sel.asset) ?? (selOption ? zeroRow(selOption) : null)].filter((t): t is TreasuryTotal => t !== null)
+                  : visibleTotals(raw.totals),
+              }))
+              .map((n) => (
               <div key={n.network}>
                 <div className="flex items-center gap-2 px-4 pt-3">
                   <NetworkBadge network={n.network} compact />
@@ -169,7 +233,7 @@ export default function TreasuryPage() {
           </div>
           <ul className="divide-y divide-border/60">
             {(data?.byPool ?? []).length === 0 && !isLoading ? <li className={`px-4 py-8 text-center text-[11px] ${soft}`}>No active pools.</li> : null}
-            {(data?.byPool ?? []).map((p) => (
+            {(data?.byPool ?? []).filter((p) => !sel || p.network === sel.network).map((p) => (
               <li key={p.poolId} className="flex flex-wrap items-start justify-between gap-3 px-4 py-3">
                 <div className="min-w-0">
                   <div className="flex flex-wrap items-center gap-2">
@@ -191,8 +255,13 @@ export default function TreasuryPage() {
                   </p>
                 </div>
                 <div className="flex flex-col items-end gap-0.5 font-mono text-xs">
-                  {p.master.length === 0 ? <span className="text-text-muted">—</span> : null}
-                  {p.master.map((m) => (
+                  {p.master.length === 0 && !sel ? <span className="text-text-muted">—</span> : null}
+                  {sel && selOption && !p.master.some((m) => m.asset.toLowerCase() === sel.asset) ? (
+                    <span className="tabular-nums text-text-muted">
+                      0 <span className={`text-[10px] ${soft}`}>{selOption.symbol}</span>
+                    </span>
+                  ) : null}
+                  {p.master.filter((m) => !sel || m.asset.toLowerCase() === sel.asset).filter((m) => sel || m.asset === NATIVE_ASSET || !isZeroWei(m.balanceWei)).map((m) => (
                     <span key={m.asset} className={`tabular-nums ${m.asset === "native" && p.lowGas ? "text-warning" : ink}`} title={`${formatUnits(m.balanceWei, m.decimals, m.decimals)} ${m.symbol}`}>
                       {formatUnits(m.balanceWei, m.decimals)} <span className={`text-[10px] ${soft}`}>{m.symbol}</span>
                     </span>
@@ -207,8 +276,13 @@ export default function TreasuryPage() {
       {/* Deposit feed across pools */}
       <section className="dash-card overflow-hidden">
         <div className={`border-b border-border px-4 py-2 ${bgInset}`}>
-          <p className={`text-[10px] font-mono uppercase tracking-widest ${soft}`}>Recent deposits · last {FEED_LIMIT} across pools</p>
+          <p className={`text-[10px] font-mono uppercase tracking-widest ${soft}`}>
+            Recent {selOption ? `${selOption.symbol} ` : ""}deposits · last {FEED_LIMIT} across pools
+          </p>
         </div>
+        {sel?.asset === NATIVE_ASSET ? (
+          <p className={`px-4 py-8 text-center text-[11px] ${soft}`}>Native BNB deposits are not itemized; they show up as balance changes above.</p>
+        ) : (
         <DepositFeed
           deposits={feed}
           loading={feedLoading}
@@ -217,15 +291,20 @@ export default function TreasuryPage() {
             return net ? isMainnet(net) : true;
           }}
           poolNameOf={(d) => poolName.get(walletIdPool.get(d.id) ?? "")}
-          emptyText="No token deposits across active pools yet."
+          emptyText={selOption ? `No ${selOption.symbol} deposits across active pools yet.` : "No token deposits across active pools yet."}
         />
+        )}
       </section>
 
       {/* Per-pool breakdown */}
       <section className="space-y-3">
         <p className="dash-section-title">Per-pool breakdown</p>
         <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
-          {(data?.byPool ?? []).map((p) => (
+          {(data?.byPool ?? []).filter((p) => !sel || p.network === sel.network).map((p) => {
+            const lines = sel
+              ? [p.totals.find((t) => t.asset.toLowerCase() === sel.asset) ?? (selOption ? zeroRow(selOption) : null)].filter((t): t is TreasuryTotal => t !== null)
+              : visibleTotals(p.totals);
+            return (
             <div key={p.poolId} className="dash-card p-4">
               <div className="flex items-center justify-between gap-2">
                 <Link to={`/admin/managed/pools/${p.poolId}`} className={`truncate text-xs font-semibold hover:text-accent ${ink}`}>
@@ -234,8 +313,8 @@ export default function TreasuryPage() {
                 <NetworkBadge network={p.network} compact />
               </div>
               <ul className="mt-2 space-y-1 font-mono text-[11px]">
-                {p.totals.length === 0 ? <li className="text-text-muted">No balances</li> : null}
-                {p.totals.map((t) => (
+                {lines.length === 0 ? <li className="text-text-muted">No balances</li> : null}
+                {lines.map((t) => (
                   <li key={t.asset} className="flex items-center justify-between gap-2">
                     <span className="inline-flex items-center gap-1.5">
                       <TokenBadge symbol={t.symbol} asset={t.asset} />
@@ -246,7 +325,8 @@ export default function TreasuryPage() {
                 ))}
               </ul>
             </div>
-          ))}
+            );
+          })}
         </div>
       </section>
     </div>

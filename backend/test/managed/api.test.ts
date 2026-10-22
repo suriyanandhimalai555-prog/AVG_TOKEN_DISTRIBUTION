@@ -9,6 +9,7 @@
  * before lib/postgres is imported.
  */
 import { randomBytes, randomUUID } from "crypto";
+import { KNOWN_TOKENS } from "../../src/managed/chain/knownTokens";
 import { HDNodeWallet, Mnemonic } from "ethers";
 import express from "express";
 import session from "express-session";
@@ -419,9 +420,13 @@ describe.skipIf(!dbAvailable)("against the throwaway database", () => {
     expect(res.headers["content-type"]).toMatch(/^text\/csv/);
     expect(res.headers["content-disposition"]).toBe(`attachment; filename="pool-${poolId}.csv"`);
     const lines = res.text.trim().split(/\r?\n/);
-    expect(lines[0]).toBe("index,address,label,holder_name,holder_email,status,tBNB");
+    // Base columns, the native coin, then one column per tracked testnet token (the known-token catalog).
+    const header = lines[0].split(",");
+    expect(header.slice(0, 7)).toEqual(["index", "address", "label", "holder_name", "holder_email", "status", "tBNB"]);
+    const catalogSymbols = new Set(KNOWN_TOKENS.bscTestnet.map((t) => t.symbol));
+    expect(header.slice(7).every((h) => catalogSymbols.has(h))).toBe(true);
     expect(lines).toHaveLength(4);
-    expect(lines[1]).toBe(`1,${ACCOUNT_1},member-1,,,ACTIVE,0`);
+    expect(lines[1]).toBe(`1,${ACCOUNT_1},member-1,,,ACTIVE,` + header.slice(6).map(() => "0").join(","));
     expect(res.text).not.toContain(viewToken);
   });
 
@@ -462,7 +467,9 @@ describe.skipIf(!dbAvailable)("against the throwaway database", () => {
       const header = csv.text.split(/\r?\n/)[0].split(",");
       expect(header.slice(0, 7)).toEqual(["index", "address", "label", "holder_name", "holder_email", "status", "tBNB"]);
       // Token column order follows the DB collation of the raw symbol; compare as a set.
-      expect(header.slice(7).sort()).toEqual([`tBNB (${spoofAddress.slice(0, 10)})`, "S".repeat(24)].sort());
+      // Ignore the known-token catalog columns; only the two inserted tokens matter here.
+      const catalogSymbols = new Set(KNOWN_TOKENS.bscTestnet.map((t) => t.symbol));
+      expect(header.slice(7).filter((h) => !catalogSymbols.has(h)).sort()).toEqual([`tBNB (${spoofAddress.slice(0, 10)})`, "S".repeat(24)].sort());
       expect(csv.text).not.toContain(bidi);
     } finally {
       await db.query("DELETE FROM managed_tokens WHERE id = ANY($1::uuid[])", [[spoofId, longId]]);

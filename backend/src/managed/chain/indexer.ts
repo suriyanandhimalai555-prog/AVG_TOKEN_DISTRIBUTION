@@ -140,6 +140,24 @@ function topicToAddress(topic: string): string | null {
 /** Exactly one ABI word: 0x + 64 hex chars (< 2^256, fits NUMERIC(78,0)). */
 const DATA_WORD_RE = /^0x[0-9a-fA-F]{64}$/;
 
+const RANGE_LIMIT_RE = /block range|blocks range|range is too large|range too large|limit exceeded|query returned more than|exceed(?:s|ed)? (?:the )?max(?:imum)? (?:block )?range|too many blocks/i;
+/** Smallest span the indexer falls back to; every major provider accepts it. */
+export const MIN_LOG_BLOCK_SPAN = 10;
+
+/**
+ * When `err` is a provider block-range limit, returns the next smaller span
+ * (a tenth of the current one, never below MIN_LOG_BLOCK_SPAN); otherwise null.
+ */
+export function shrinkSpanOnRangeError(err: unknown, current: number): number | null {
+  const e = err as { message?: unknown; shortMessage?: unknown; error?: { message?: unknown }; info?: { error?: { message?: unknown } } };
+  const text = [e?.message, e?.shortMessage, e?.error?.message, e?.info?.error?.message]
+    .filter((v): v is string => typeof v === "string")
+    .join(" | ");
+  if (!RANGE_LIMIT_RE.test(text)) return null;
+  if (current <= MIN_LOG_BLOCK_SPAN) return null;
+  return Math.max(MIN_LOG_BLOCK_SPAN, Math.floor(current / 10));
+}
+
 /**
  * Decodes one eth_getLogs entry; null when it is not a well-formed ERC-20
  * Transfer with a non-zero amount (SR-02). `log.data` is attacker-controlled:
@@ -213,6 +231,8 @@ export class ManagedIndexer {
   private cycle: Promise<void> | null = null;
   private readonly inFlight = new Map<Network, Promise<IndexerRunResult>>();
   private readonly backoffUntil = new Map<Network, number>();
+  /** Block span per eth_getLogs call, shrunk per network when a provider rejects the range. */
+  private readonly blockSpan = new Map<Network, number>();
   private readonly consecutiveErrors = new Map<Network, number>();
   private stopped = true;
 
@@ -370,17 +390,30 @@ export class ManagedIndexer {
       }
       const blockTimes = new Map<number, Date | null>();
 
-      for (let chunkFrom = from; chunkFrom <= head; chunkFrom += this.options.blockChunk) {
-        const chunkTo = Math.min(chunkFrom + this.options.blockChunk - 1, head);
+      let chunkFrom = from;
+      chunkLoop: while (chunkFrom <= head) {
+        const span = this.blockSpan.get(network) ?? this.options.blockChunk;
+        const chunkTo = Math.min(chunkFrom + span - 1, head);
         const rows: DepositInsert[] = [];
 
         if (paddedChunks.length > 0) {
           for (const padded of paddedChunks) {
-            const logs = await provider.getLogs({
-              fromBlock: chunkFrom,
-              toBlock: chunkTo,
-              topics: [TRANSFER_SIG, null, padded],
-            });
+            let logs: Awaited<ReturnType<typeof provider.getLogs>>;
+            try {
+              logs = await provider.getLogs({
+                fromBlock: chunkFrom,
+                toBlock: chunkTo,
+                topics: [TRANSFER_SIG, null, padded],
+              });
+            } catch (err) {
+              // Provider plans cap the eth_getLogs block range (Alchemy Free: 10).
+              // Shrink the span for this network and retry the same chunk.
+              const smaller = shrinkSpanOnRangeError(err, span);
+              if (smaller === null) throw err;
+              this.blockSpan.set(network, smaller);
+              this.logger.warn("eth_getLogs block range rejected; shrinking span", { network, from: span, to: smaller });
+              continue chunkLoop;
+            }
             result.logs += logs.length;
 
             for (const log of logs) {
@@ -437,6 +470,7 @@ export class ManagedIndexer {
         }
         await this.deps.indexerState.upsert({ network, lastScannedBlock: chunkTo });
         result.scannedTo = chunkTo;
+        chunkFrom = chunkTo + 1;
       }
 
       await this.deps.indexerState.upsert({

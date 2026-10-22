@@ -37,6 +37,31 @@ function mapToken(row: any): ManagedToken {
 
 export const tokens = {
   /**
+   * Inserts default tracked tokens (the known-token catalog). Existing rows are
+   * left untouched, so an admin's hidden flag or an earlier discovery wins.
+   * Returns how many rows were created.
+   */
+  async seedTracked(list: TrackedTokenInput[]): Promise<number> {
+    if (list.length === 0) return 0;
+    const pool = requirePool();
+    const values: unknown[] = [];
+    const rows = list.map((t, i) => {
+      values.push(randomUUID(), t.network, t.tokenAddress.toLowerCase(), t.symbol, t.name, t.decimals);
+      const b = i * 6;
+      return `($${b + 1}, $${b + 2}, $${b + 3}, $${b + 4}, $${b + 5}, $${b + 6}, 'TRACKED', FALSE, NOW())`;
+    });
+    const result = await pool.query(
+      `
+        INSERT INTO managed_tokens (id, network, token_address, symbol, name, decimals, source, hidden, created_at)
+        VALUES ${rows.join(", ")}
+        ON CONFLICT (network, token_address) DO NOTHING
+      `,
+      values
+    );
+    return result.rowCount ?? 0;
+  },
+
+  /**
    * Records a token seen by the indexer. An existing row keeps its metadata,
    * source and hidden flag; only first_seen_block moves (to the lowest block).
    */

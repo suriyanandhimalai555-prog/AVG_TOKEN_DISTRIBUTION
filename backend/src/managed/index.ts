@@ -29,6 +29,7 @@ import { managedLog } from "./redact";
 import { createAdminRouter } from "./routes/admin";
 import { createViewRouter } from "./routes/view";
 import { registerIndexer } from "./service/indexerService";
+import { seedKnownTokens } from "./service/knownTokenService";
 
 export { isManagedEnabled } from "./middleware/featureFlag";
 
@@ -102,6 +103,10 @@ export async function startManagedWorkers(): Promise<void> {
     return;
   }
 
+  if (runtime) return;
+  // Track the major tokens before the first indexer cycle so its full balance
+  // refresh already covers them.
+  await seedKnownTokens();
   if (runtime) return;
   runtime = buildRuntime();
   registerIndexer(runtime.indexer);

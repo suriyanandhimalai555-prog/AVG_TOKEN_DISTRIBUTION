@@ -3,7 +3,8 @@ import type { ManagedWalletWithBalances, Network } from "@/lib/managedTypes";
 import AddressCell from "@/components/ui/AddressCell";
 import BalanceChips from "./BalanceChips";
 import ViewLinkButton from "./ViewLinkButton";
-import { timeAgo } from "./format";
+import { formatUnits, isZeroWei, timeAgo } from "./format";
+import type { AssetOption } from "./AssetSelect";
 import { ghostBtn, tdCls, thCls, useManagedTheme } from "./theme";
 
 interface ManagedWalletTableProps {
@@ -17,6 +18,8 @@ interface ManagedWalletTableProps {
   onTransfer: (wallet: ManagedWalletWithBalances) => void;
   onRotate: (wallet: ManagedWalletWithBalances) => void;
   readOnly?: boolean;
+  /** When set, the Balances column shows only this token for every wallet. */
+  asset?: AssetOption | null;
 }
 
 const COLUMNS = ["", "#", "Address", "Label", "Holder", "Balances", "Last deposit", "Actions"];
@@ -32,6 +35,7 @@ export default function ManagedWalletTable({
   onTransfer,
   onRotate,
   readOnly = false,
+  asset = null,
 }: ManagedWalletTableProps) {
   const { ink, soft, rowZebra, rowHover } = useManagedTheme();
   const ids = wallets.map((w) => w.id);
@@ -44,7 +48,7 @@ export default function ManagedWalletTable({
         <thead>
           <tr className="border-b border-border">
             {COLUMNS.map((h, i) => (
-              <th key={`${h}-${i}`} className={`${thCls} ${soft}`}>
+              <th key={`${h}-${i}`} className={`${thCls} ${soft} ${h === "Balances" && asset ? "text-right" : ""}`}>
                 {i === 0 ? (
                   <input
                     type="checkbox"
@@ -56,6 +60,8 @@ export default function ManagedWalletTable({
                     }}
                     onChange={(e) => onToggleAll(ids, e.target.checked)}
                   />
+                ) : h === "Balances" && asset ? (
+                  `${asset.symbol} balance`
                 ) : (
                   h
                 )}
@@ -100,8 +106,8 @@ export default function ManagedWalletTable({
                       <span className="text-text-muted">Unassigned</span>
                     )}
                   </td>
-                  <td className={tdCls}>
-                    <BalanceChips balances={w.balances} />
+                  <td className={`${tdCls} ${asset ? "text-right" : ""}`}>
+                    {asset ? <SingleBalance wallet={w} asset={asset} /> : <BalanceChips balances={w.balances} />}
                   </td>
                   <td className={`${tdCls} whitespace-nowrap ${soft}`} title={w.lastDepositAt ?? undefined}>
                     {timeAgo(w.lastDepositAt)}
@@ -127,5 +133,19 @@ export default function ManagedWalletTable({
         </tbody>
       </table>
     </div>
+  );
+}
+
+/** Balance of one selected token for a wallet; a missing row means zero. */
+function SingleBalance({ wallet, asset }: { wallet: ManagedWalletWithBalances; asset: AssetOption }) {
+  const { ink } = useManagedTheme();
+  const entry = wallet.balances.find((b) => b.asset.toLowerCase() === asset.asset);
+  const wei = entry?.balanceWei ?? "0";
+  const zero = isZeroWei(wei);
+  const decimals = entry?.decimals ?? asset.decimals;
+  return (
+    <span className={`tabular-nums ${zero ? "text-text-muted" : `font-semibold ${ink}`}`} title={`${formatUnits(wei, decimals, decimals)} ${asset.symbol}`}>
+      {formatUnits(wei, decimals, 6)} <span className="text-[10px] font-semibold uppercase text-accent">{asset.symbol}</span>
+    </span>
   );
 }
