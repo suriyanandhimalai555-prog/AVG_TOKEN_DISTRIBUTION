@@ -17,6 +17,7 @@ import TransferDialog from "@/components/managed/TransferDialog";
 import SweepDialog from "@/components/managed/SweepDialog";
 import DepositFeed from "@/components/managed/DepositFeed";
 import AssetSelect, { useAssetOptions, useSelectedAsset, type AssetOption } from "@/components/managed/AssetSelect";
+import TokenIcon from "@/components/managed/TokenIcon";
 import TransferJobsTable from "@/components/managed/TransferJobsTable";
 import JobStatusDrawer from "@/components/managed/JobStatusDrawer";
 import RevealMnemonicModal from "@/components/managed/RevealMnemonicModal";
@@ -564,7 +565,12 @@ function AssetStatCard({
   const holders = row?.walletsWithBalance ?? 0;
   return (
     <StatCard
-      label={`Total ${asset.symbol}`}
+      label={
+        <span className="inline-flex items-center gap-1.5">
+          <TokenIcon asset={asset.asset} symbol={asset.symbol} size={14} />
+          {`Total ${asset.symbol}`}
+        </span>
+      }
       value={treasury ? formatUnits(wei, row?.decimals ?? asset.decimals, 8) : "—"}
       sub={`${holders.toLocaleString()} of ${wallets.toLocaleString()} wallet${wallets === 1 ? "" : "s"} hold${holders === 1 ? "s" : ""} it`}
       accent={!isZeroWei(wei)}

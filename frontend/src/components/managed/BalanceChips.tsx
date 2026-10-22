@@ -1,6 +1,7 @@
 import type { BalanceEntry } from "@/lib/managedTypes";
 import { formatUnits, isZeroWei } from "./format";
 import { useManagedTheme } from "./theme";
+import TokenIcon from "./TokenIcon";
 
 interface BalanceChipsProps {
   balances: BalanceEntry[];
@@ -23,9 +24,10 @@ export default function BalanceChips({ balances, hideZero = true, max = 4 }: Bal
         return (
           <span
             key={b.asset}
-            className={`inline-flex items-center gap-1 rounded-md border border-border px-1.5 py-0.5 font-mono text-[11px] ${bgInset} ${zero ? "text-text-muted" : ink}`}
+            className={`inline-flex items-center gap-1 rounded-md border border-border py-0.5 pl-0.5 pr-1.5 font-mono text-[11px] ${bgInset} ${zero ? "text-text-muted" : ink}`}
             title={`${formatUnits(b.balanceWei, b.decimals, b.decimals)} ${b.symbol}`}
           >
+            <TokenIcon asset={b.asset} symbol={b.symbol} size={16} className={zero ? "opacity-60" : ""} />
             <span className="tabular-nums">{formatUnits(b.balanceWei, b.decimals, 4)}</span>
             <span className={`text-[10px] font-semibold uppercase ${b.asset === "native" ? "text-warning" : "text-accent"}`}>{b.symbol}</span>
           </span>

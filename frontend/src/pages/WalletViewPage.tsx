@@ -18,6 +18,8 @@ import { fmtDateTime, formatUnits, isMainnet, timeAgo } from "@/components/manag
 import { managedApi } from "@/lib/managedApi";
 import type { PublicWalletView } from "@/lib/managedApi";
 import { bscScanTx, copyToClipboard, shortAddr, shortHash } from "@/lib/utils";
+import TokenIcon from "@/components/managed/TokenIcon";
+import { NATIVE_ASSET } from "@/lib/managedTypes";
 
 const POLL_MS = 60_000;
 
@@ -141,8 +143,11 @@ function WalletView({
           </div>
         </div>
 
-        <div className={`mt-3 flex items-baseline justify-between rounded-lg px-4 py-3 ${t.bgInset}`}>
-          <span className={`text-sm font-medium ${t.ink}`}>{data.native.symbol}</span>
+        <div className={`mt-3 flex items-center justify-between rounded-lg px-4 py-3 ${t.bgInset}`}>
+          <span className={`inline-flex items-center gap-2.5 text-sm font-medium ${t.ink}`}>
+            <TokenIcon asset={NATIVE_ASSET} symbol={data.native.symbol} size={28} />
+            {data.native.symbol}
+          </span>
           <span className={`font-mono text-lg font-semibold ${t.ink}`}>{formatUnits(data.native.balanceWei, 18, 8)}</span>
         </div>
 
@@ -150,7 +155,9 @@ function WalletView({
           <ul className="mt-2 divide-y divide-border">
             {data.tokens.map((tok) => (
               <li key={tok.tokenAddress} className="flex items-center justify-between gap-3 py-2.5">
-                <div className="min-w-0">
+                <div className="flex min-w-0 items-center gap-2.5">
+                  <TokenIcon asset={tok.tokenAddress} symbol={tok.symbol} size={28} />
+                  <div className="min-w-0">
                   <p className={`text-sm font-medium ${t.ink}`}>
                     {tok.symbol}{" "}
                     <span className="font-mono text-[11px] font-normal text-text-muted" title={tok.tokenAddress}>
@@ -158,6 +165,7 @@ function WalletView({
                     </span>
                   </p>
                   <p className="truncate text-[11px] text-text-muted">{tok.name}</p>
+                  </div>
                 </div>
                 <span className={`font-mono text-sm ${t.ink}`}>{formatUnits(tok.balanceWei, tok.decimals, 6)}</span>
               </li>
@@ -190,7 +198,12 @@ function WalletView({
                   return (
                     <tr key={`${d.txHash}-${i}`} className={i % 2 === 1 ? t.rowZebra : ""}>
                       <td className={`whitespace-nowrap py-2 pr-3 ${t.soft}`}>{fmtDateTime(d.blockTime)}</td>
-                      <td className={`whitespace-nowrap py-2 pr-3 font-medium ${t.ink}`}>{d.symbol}</td>
+                      <td className={`whitespace-nowrap py-2 pr-3 font-medium ${t.ink}`}>
+                        <span className="inline-flex items-center gap-1.5">
+                          <TokenIcon asset={d.asset} symbol={d.symbol} size={16} />
+                          {d.symbol}
+                        </span>
+                      </td>
                       <td className={`whitespace-nowrap py-2 pr-3 text-right font-mono ${t.ink}`}>
                         {formatUnits(d.amountWei, d.decimals, 6)}
                       </td>

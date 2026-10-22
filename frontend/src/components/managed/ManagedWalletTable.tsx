@@ -5,6 +5,7 @@ import BalanceChips from "./BalanceChips";
 import ViewLinkButton from "./ViewLinkButton";
 import { formatUnits, isZeroWei, timeAgo } from "./format";
 import type { AssetOption } from "./AssetSelect";
+import TokenIcon from "./TokenIcon";
 import { ghostBtn, tdCls, thCls, useManagedTheme } from "./theme";
 
 interface ManagedWalletTableProps {
@@ -144,7 +145,8 @@ function SingleBalance({ wallet, asset }: { wallet: ManagedWalletWithBalances; a
   const zero = isZeroWei(wei);
   const decimals = entry?.decimals ?? asset.decimals;
   return (
-    <span className={`tabular-nums ${zero ? "text-text-muted" : `font-semibold ${ink}`}`} title={`${formatUnits(wei, decimals, decimals)} ${asset.symbol}`}>
+    <span className={`inline-flex items-center justify-end gap-1.5 tabular-nums ${zero ? "text-text-muted" : `font-semibold ${ink}`}`} title={`${formatUnits(wei, decimals, decimals)} ${asset.symbol}`}>
+      <TokenIcon asset={asset.asset} symbol={asset.symbol} size={16} className={zero ? "opacity-60" : ""} />
       {formatUnits(wei, decimals, 6)} <span className="text-[10px] font-semibold uppercase text-accent">{asset.symbol}</span>
     </span>
   );

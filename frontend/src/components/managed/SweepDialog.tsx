@@ -11,6 +11,7 @@ import { managedApi } from "./client";
 import { apiErrorMessage, badgeStatus, formatUnits, isMainnet, isTerminalStatus, isValidAddress, isZeroWei, nativeSymbol, newIdempotencyKey } from "./format";
 import Modal from "./Modal";
 import TokenBadge from "./TokenBadge";
+import TokenIcon from "./TokenIcon";
 import { useReauth } from "./ReauthDialog";
 import { inputCls, outlineBtn, primaryBtn, useManagedTheme } from "./theme";
 
@@ -242,9 +243,11 @@ export default function SweepDialog({ open, poolId, masterAddress, network, sele
                             return n;
                           })
                         }
-                        className={`rounded-full border px-2 py-1 text-[11px] font-mono transition ${on ? "border-accent bg-accent/15 text-accent" : `border-border ${soft} ${hoverInset}`}`}
+                        className={`inline-flex items-center gap-1.5 rounded-full border py-1 pl-1 pr-2.5 text-[11px] font-mono transition ${on ? "border-accent bg-accent/15 text-accent" : `border-border ${soft} ${hoverInset}`}`}
                         title={a.asset === NATIVE_ASSET ? a.name : `${a.name} · ${a.asset}`}
+                        aria-pressed={on}
                       >
+                        <TokenIcon asset={a.asset} symbol={a.symbol} size={18} />
                         {a.symbol}
                       </button>
                     );

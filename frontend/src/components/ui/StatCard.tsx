@@ -1,7 +1,9 @@
 import { useTheme } from "@/theme/ThemeProvider";
 
+import type { ReactNode } from "react";
+
 interface StatCardProps {
-  label: string;
+  label: ReactNode;
   value: string | number;
   sub?: string;
   accent?: boolean;

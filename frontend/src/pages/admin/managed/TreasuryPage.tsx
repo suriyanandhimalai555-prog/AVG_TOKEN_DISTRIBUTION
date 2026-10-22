@@ -9,6 +9,7 @@ import AddressCell from "@/components/ui/AddressCell";
 import { managedApi } from "@/components/managed/client";
 import NetworkBadge from "@/components/managed/NetworkBadge";
 import TokenBadge from "@/components/managed/TokenBadge";
+import TokenIcon from "@/components/managed/TokenIcon";
 import DepositFeed from "@/components/managed/DepositFeed";
 import AssetSelect, { useAssetOptions, useSelectedAsset, type AssetOption } from "@/components/managed/AssetSelect";
 import { apiErrorMessage, formatUnits, isMainnet, isZeroWei, networkLabel, timeAgo } from "@/components/managed/format";
@@ -143,7 +144,12 @@ export default function TreasuryPage() {
             const row = (data?.totalsByNetwork ?? []).find((n) => n.network === sel.network)?.totals.find((t) => t.asset.toLowerCase() === sel.asset);
             return (
               <StatCard
-                label={`Total ${selOption.symbol}`}
+                label={
+                  <span className="inline-flex items-center gap-1.5">
+                    <TokenIcon asset={selOption.asset} symbol={selOption.symbol} size={14} />
+                    {`Total ${selOption.symbol}`}
+                  </span>
+                }
                 value={formatUnits(row?.totalWei ?? "0", row?.decimals ?? selOption.decimals, 8)}
                 sub={`${(row?.walletsWithBalance ?? 0).toLocaleString()} wallet${(row?.walletsWithBalance ?? 0) === 1 ? " holds" : "s hold"} it · ${networkLabel(sel.network)}`}
                 accent={!isZeroWei(row?.totalWei ?? "0")}
@@ -257,12 +263,14 @@ export default function TreasuryPage() {
                 <div className="flex flex-col items-end gap-0.5 font-mono text-xs">
                   {p.master.length === 0 && !sel ? <span className="text-text-muted">—</span> : null}
                   {sel && selOption && !p.master.some((m) => m.asset.toLowerCase() === sel.asset) ? (
-                    <span className="tabular-nums text-text-muted">
+                    <span className="inline-flex items-center gap-1.5 tabular-nums text-text-muted">
+                      <TokenIcon asset={selOption.asset} symbol={selOption.symbol} size={14} className="opacity-60" />
                       0 <span className={`text-[10px] ${soft}`}>{selOption.symbol}</span>
                     </span>
                   ) : null}
                   {p.master.filter((m) => !sel || m.asset.toLowerCase() === sel.asset).filter((m) => sel || m.asset === NATIVE_ASSET || !isZeroWei(m.balanceWei)).map((m) => (
-                    <span key={m.asset} className={`tabular-nums ${m.asset === "native" && p.lowGas ? "text-warning" : ink}`} title={`${formatUnits(m.balanceWei, m.decimals, m.decimals)} ${m.symbol}`}>
+                    <span key={m.asset} className={`inline-flex items-center gap-1.5 tabular-nums ${m.asset === "native" && p.lowGas ? "text-warning" : ink}`} title={`${formatUnits(m.balanceWei, m.decimals, m.decimals)} ${m.symbol}`}>
+                      <TokenIcon asset={m.asset} symbol={m.symbol} size={14} />
                       {formatUnits(m.balanceWei, m.decimals)} <span className={`text-[10px] ${soft}`}>{m.symbol}</span>
                     </span>
                   ))}
