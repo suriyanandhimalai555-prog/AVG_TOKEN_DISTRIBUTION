@@ -390,6 +390,23 @@ jobs:
 
             echo "Backend internal health check successful."
             echo ""
+
+            echo "=================================================="
+            echo "🗄️ DATABASE MIGRATIONS"
+            echo "=================================================="
+
+            # Idempotent: applies only migrations not yet recorded in
+            # schema_migrations. Non-fatal on purpose: the app runs without
+            # them (Managed Wallets shows its setup checklist), so a failure
+            # here is reported but never triggers a rollback.
+            if kubectl --request-timeout=120s exec \
+              -n "$NAMESPACE" "$BACKEND_POD" \
+              -- node dist/migrate.js; then
+              echo "✅ Migrations up to date."
+            else
+              echo "⚠️ Migration step failed; run it by hand: kubectl exec -n $NAMESPACE deploy/holderforge-backend -- node dist/migrate.js"
+            fi
+            echo ""
             echo "=================================================="
 
             echo "=================================================="
