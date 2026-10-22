@@ -3,6 +3,7 @@ import { Wallet, ArrowRight, Archive } from "lucide-react";
 import type { PoolSummary } from "@/lib/managedTypes";
 import AddressCell from "@/components/ui/AddressCell";
 import NetworkBadge from "./NetworkBadge";
+import SeedTypeBadge from "./SeedTypeBadge";
 import { useManagedTheme } from "./theme";
 import { fmtDateTime } from "./format";
 
@@ -19,7 +20,10 @@ export default function PoolCard({ pool }: { pool: PoolSummary }) {
           <h3 className={`truncate text-sm font-semibold ${ink}`}>{pool.name}</h3>
           <p className={`mt-0.5 text-[10px] ${soft}`}>Created {fmtDateTime(pool.createdAt)}</p>
         </div>
-        <NetworkBadge network={pool.network} compact />
+        <div className="flex shrink-0 flex-col items-end gap-1">
+          <NetworkBadge network={pool.network} compact />
+          <SeedTypeBadge seedType={pool.seedType} />
+        </div>
       </div>
       <div className="flex items-center justify-between gap-2 text-[11px]">
         <span className={soft}>Master</span>

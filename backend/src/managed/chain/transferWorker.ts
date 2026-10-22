@@ -29,6 +29,7 @@
  */
 
 import { HDNodeWallet, Transaction, Wallet } from "ethers";
+import { childSignerFor, masterSignerFor } from "../derive";
 import { NATIVE_ASSET } from "../types";
 import type { ManagedAuditAction, Network, TransferFailureCode } from "../types";
 import type { BalanceRefresher, DirtyPair } from "./balances";
@@ -193,6 +194,26 @@ function errorMessage(err: unknown): string {
  * dropped on return and only the two private-key strings survive, until
  * `processJob` returns (JS strings cannot be wiped).
  */
+/**
+ * Signers for either kind of pool secret. MNEMONIC pools use the stored
+ * account path; PRIVATE_KEY pools use the key as master and the documented
+ * HMAC-derived seed for children (see derive.ts).
+ */
+export function signersFromSecret(
+  secret: string,
+  seedType: "MNEMONIC" | "PRIVATE_KEY",
+  accountPath: string,
+  derivationIndex: number
+): Signers {
+  if (seedType === "PRIVATE_KEY") {
+    return {
+      master: new Wallet(masterSignerFor(secret, "PRIVATE_KEY").privateKey),
+      child: new Wallet(childSignerFor(secret, "PRIVATE_KEY", derivationIndex).privateKey),
+    };
+  }
+  return signersFromMnemonic(secret, accountPath, derivationIndex);
+}
+
 export function signersFromMnemonic(mnemonic: string, accountPath: string, derivationIndex: number): Signers {
   const account = HDNodeWallet.fromPhrase(mnemonic, undefined, accountPath);
   return {
@@ -531,9 +552,9 @@ export class TransferWorker {
     }
     let signers: Signers;
     try {
-      signers = signersFromMnemonic(mnemonic, pool.accountPath || DEFAULT_ACCOUNT_PATH, wallet.derivationIndex);
+      signers = signersFromSecret(mnemonic, pool.seedType ?? "MNEMONIC", pool.accountPath || DEFAULT_ACCOUNT_PATH, wallet.derivationIndex);
     } catch {
-      throw new WorkerFailure("UNKNOWN", "Decrypted seed is not a valid mnemonic");
+      throw new WorkerFailure("UNKNOWN", "Decrypted pool secret is not a valid mnemonic or private key");
     } finally {
       mnemonic = "";
     }

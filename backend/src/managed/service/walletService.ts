@@ -5,7 +5,7 @@
  * ARCHITECTURE §5.3): the token appears only in GET /wallets/:id and on rotate.
  */
 import { recordManagedAudit } from "../audit";
-import { addressesFor } from "../derive";
+import { addressesForSecret } from "../derive";
 import { decryptSecret } from "../keyVault";
 import { balances } from "../models/balances";
 import type { BalanceRecord } from "../models/balances";
@@ -127,7 +127,7 @@ export async function generateWallets(
   let range: { from: number; to: number };
   try {
     range = await pools.reserveIndexes(poolId, count);
-    derived = addressesFor(mnemonic, range.from, range.to);
+    derived = addressesForSecret(mnemonic, pool.seedType, range.from, range.to);
   } finally {
     mnemonic = "";
   }

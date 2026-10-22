@@ -4,7 +4,7 @@
  */
 import { randomUUID } from "crypto";
 import { recordManagedAudit } from "../audit";
-import { generateMnemonic, isValidMnemonic, masterSigner } from "../derive";
+import { generateMnemonic, isValidMnemonic, masterSignerFor, normalizePrivateKey } from "../derive";
 import { decryptSecret, encryptSecret } from "../keyVault";
 import { deposits } from "../models/deposits";
 import { pools } from "../models/pools";
@@ -15,6 +15,7 @@ import type {
   CreatePoolResponse,
   GetPoolResponse,
   ListPoolsResponse,
+  PoolSeedType,
   PoolStatus,
   RevealMnemonicResponse,
   UpdatePoolRequest,
@@ -44,21 +45,40 @@ export async function createPool(
   if (body?.mnemonic !== undefined && typeof body.mnemonic !== "string") {
     throw badRequest("INVALID_MNEMONIC", "mnemonic must be a string");
   }
+  if (body?.privateKey !== undefined && typeof body.privateKey !== "string") {
+    throw badRequest("INVALID_PRIVATE_KEY", "privateKey must be a string");
+  }
+  const hasPhrase = Boolean(body?.mnemonic?.trim());
+  const hasKey = Boolean(body?.privateKey?.trim());
+  if (hasPhrase && hasKey) {
+    throw badRequest("CONFLICTING_SECRETS", "Send either a mnemonic or a private key, not both");
+  }
 
-  let mnemonic = body?.mnemonic?.trim() ? body.mnemonic.trim().split(/\s+/).join(" ") : "";
-  if (mnemonic) {
-    if (!isValidMnemonic(mnemonic)) {
+  // `secret` holds the plaintext phrase or key only inside this function.
+  let secretText = "";
+  let seedType: PoolSeedType = "MNEMONIC";
+  if (hasKey) {
+    const key = normalizePrivateKey(body.privateKey as string);
+    if (!key) {
+      throw badRequest("INVALID_PRIVATE_KEY", "The private key must be 64 hex characters (with or without 0x) and a valid secp256k1 key");
+    }
+    secretText = key;
+    seedType = "PRIVATE_KEY";
+  } else if (hasPhrase) {
+    secretText = (body.mnemonic as string).trim().split(/\s+/).join(" ");
+    if (!isValidMnemonic(secretText)) {
+      secretText = "";
       throw badRequest("INVALID_MNEMONIC", "The mnemonic is not a valid BIP-39 phrase");
     }
   } else {
-    mnemonic = generateMnemonic();
+    secretText = generateMnemonic();
   }
 
   const id = randomUUID();
   let record: PoolRecord;
   try {
-    const masterAddress = masterSigner(mnemonic).address;
-    const secret = encryptSecret(mnemonic, id);
+    const masterAddress = masterSignerFor(secretText, seedType).address;
+    const secret = encryptSecret(secretText, id);
     record = await pools.create({
       id,
       ownerUserId: userId,
@@ -69,16 +89,17 @@ export async function createPool(
       mnemonicIv: secret.iv,
       mnemonicTag: secret.tag,
       keyVersion: secret.keyVersion,
+      seedType,
     });
   } finally {
-    mnemonic = "";
+    secretText = "";
   }
 
   await recordManagedAudit({
     userId,
     poolId: record.id,
     action: "POOL_CREATED",
-    details: { name, network, masterAddress: record.masterAddress, imported: Boolean(body?.mnemonic) },
+    details: { name, network, masterAddress: record.masterAddress, seedType, imported: hasPhrase || hasKey },
   });
 
   return { pool: toPool(record), masterAddress: record.masterAddress };
@@ -144,15 +165,16 @@ export async function revealMnemonic(
   const secret = await pools.getSecret(poolId);
   if (!secret) throw notFound("POOL_NOT_FOUND", "Pool not found");
 
-  const mnemonic = decryptSecret(secret, poolId);
+  const plaintext = decryptSecret(secret, poolId);
 
   await pools.markRevealed(poolId);
   await recordManagedAudit({
     userId,
     poolId,
     action: "MNEMONIC_REVEALED",
-    details: { masterAddress: record.masterAddress },
+    details: { masterAddress: record.masterAddress, seedType: record.seedType },
   });
 
-  return { mnemonic, masterAddress: record.masterAddress, accountPath: record.accountPath };
+  const base = { seedType: record.seedType, masterAddress: record.masterAddress, accountPath: record.accountPath };
+  return record.seedType === "PRIVATE_KEY" ? { ...base, privateKey: plaintext } : { ...base, mnemonic: plaintext };
 }

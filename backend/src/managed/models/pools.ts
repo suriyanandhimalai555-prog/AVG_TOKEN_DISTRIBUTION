@@ -1,4 +1,4 @@
-import { Network, Pool, PoolStatus } from "../types";
+import { Network, Pool, PoolSeedType, PoolStatus } from "../types";
 import { intFromRow, isoFromRow, nullableIsoFromRow, requirePool } from "./common";
 
 /**
@@ -29,6 +29,8 @@ export interface CreatePoolInput {
   mnemonicTag: string;
   keyVersion?: number;
   accountPath?: string;
+  /** What the encrypted secret is; defaults to MNEMONIC. */
+  seedType?: PoolSeedType;
 }
 
 export interface PoolPatch {
@@ -71,6 +73,7 @@ const POOL_SELECT = `
   p.network,
   p.account_path,
   p.master_address,
+  p.seed_type,
   p.key_version,
   p.next_index,
   p.status,
@@ -88,6 +91,7 @@ function mapPool(row: any): PoolRecord {
     network: row.network,
     accountPath: row.account_path,
     masterAddress: row.master_address,
+    seedType: row.seed_type === "PRIVATE_KEY" ? "PRIVATE_KEY" : "MNEMONIC",
     keyVersion: row.key_version,
     nextIndex: row.next_index,
     walletCount: intFromRow(row.wallet_count) ?? 0,
@@ -116,12 +120,13 @@ export const pools = {
           mnemonic_iv,
           mnemonic_tag,
           key_version,
+          seed_type,
           next_index,
           status,
           created_at,
           updated_at
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 1, 'ACTIVE', $11, $11)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $12, 1, 'ACTIVE', $11, $11)
         RETURNING id
       `,
       [
@@ -136,6 +141,7 @@ export const pools = {
         data.mnemonicTag,
         data.keyVersion ?? 1,
         now,
+        data.seedType ?? "MNEMONIC",
       ]
     );
 

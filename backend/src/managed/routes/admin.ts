@@ -68,7 +68,8 @@ function noStore(res: Response): void {
 async function migrated(): Promise<boolean> {
   if (!postgresPool) return false;
   try {
-    await postgresPool.query("SELECT 1 FROM managed_pools LIMIT 1");
+    // Probe the newest migrated column so a missing later migration reads as "not migrated".
+    await postgresPool.query("SELECT seed_type FROM managed_pools LIMIT 1");
     return true;
   } catch (err) {
     if (!isNotMigratedError(err)) {

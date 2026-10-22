@@ -33,7 +33,10 @@ import type {
 export type PoolRow = Pick<
   Pool,
   "id" | "name" | "network" | "masterAddress" | "status" | "accountPath"
->;
+> & {
+  /** What the encrypted secret is; absent means MNEMONIC (pools before migration 0002). */
+  seedType?: Pool["seedType"];
+};
 
 /** Subset of a `managed_wallets` row the chain layer needs. */
 export type WalletRow = Pick<

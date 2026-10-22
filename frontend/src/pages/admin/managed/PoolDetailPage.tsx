@@ -10,6 +10,7 @@ import AddressCell from "@/components/ui/AddressCell";
 import { copyToClipboard } from "@/lib/utils";
 import { managedApi } from "@/components/managed/client";
 import NetworkBadge from "@/components/managed/NetworkBadge";
+import SeedTypeBadge from "@/components/managed/SeedTypeBadge";
 import ManagedWalletTable from "@/components/managed/ManagedWalletTable";
 import GenerateWalletsDialog from "@/components/managed/GenerateWalletsDialog";
 import AssignHolderDialog from "@/components/managed/AssignHolderDialog";
@@ -91,6 +92,7 @@ export default function PoolDetailPage() {
             <div className="flex flex-wrap items-center gap-2">
               <h1 className={`font-display text-xl font-semibold tracking-tight ${ink}`}>{pool.name}</h1>
               <NetworkBadge network={pool.network} />
+              <SeedTypeBadge seedType={pool.seedType} />
               {archived ? (
                 <span className="inline-flex items-center gap-1 rounded-full border border-border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-text-muted">
                   <Archive size={10} /> Archived
@@ -400,13 +402,14 @@ function TransfersTab({ poolId, mainnet }: { poolId: string; mainnet: boolean })
 
 // ─── Settings tab (F5) ───────────────────────────────────────────────────────
 
-function SettingsTab({ poolId, pool, onChanged }: { poolId: string; pool: { name: string; status: "ACTIVE" | "ARCHIVED"; masterAddress: string; accountPath: string; mnemonicRevealedAt: string | null }; onChanged: () => void }) {
+function SettingsTab({ poolId, pool, onChanged }: { poolId: string; pool: { name: string; status: "ACTIVE" | "ARCHIVED"; masterAddress: string; accountPath: string; mnemonicRevealedAt: string | null; seedType: "MNEMONIC" | "PRIVATE_KEY" }; onChanged: () => void }) {
   const { ink, soft } = useManagedTheme();
   const [name, setName] = useState(pool.name);
   const [saving, setSaving] = useState(false);
   const [confirmArchive, setConfirmArchive] = useState(false);
   const [archiving, setArchiving] = useState(false);
-  const [reveal, setReveal] = useState<{ mnemonic: string; accountPath: string } | null>(null);
+  const [reveal, setReveal] = useState<{ secret: string; seedType: "MNEMONIC" | "PRIVATE_KEY"; accountPath: string } | null>(null);
+  const isKeyPool = pool.seedType === "PRIVATE_KEY";
   const [revealing, setRevealing] = useState(false);
   const { withReauth, reauthDialog } = useReauth("Revealing the seed exposes control of every wallet in this pool.");
   const archived = pool.status === "ARCHIVED";
@@ -448,10 +451,10 @@ function SettingsTab({ poolId, pool, onChanged }: { poolId: string; pool: { name
       setRevealing(true);
       try {
         const r = await managedApi.revealMnemonic(poolId);
-        setReveal({ mnemonic: r.mnemonic, accountPath: r.accountPath });
+        setReveal({ secret: (r.seedType === "PRIVATE_KEY" ? r.privateKey : r.mnemonic) ?? "", seedType: r.seedType, accountPath: r.accountPath });
         onChanged();
       } catch (err) {
-        toast.error(apiErrorMessage(err, "Could not reveal the seed"));
+        toast.error(apiErrorMessage(err, isKeyPool ? "Could not reveal the private key" : "Could not reveal the seed"));
       } finally {
         setRevealing(false);
       }
@@ -499,9 +502,9 @@ function SettingsTab({ poolId, pool, onChanged }: { poolId: string; pool: { name
 
       <section className="dash-card space-y-3 border-warning/35 p-4 sm:p-5">
         <p className="dash-section-title text-warning">Recovery phrase</p>
-        <p className={`text-[11px] ${soft}`}>Shows the pool seed after a password check. Every reveal is audited. Import it into MetaMask to see the master as account 1.</p>
+        <p className={`text-[11px] ${soft}`}>{isKeyPool ? "Shows the imported private key after a password check. Every reveal is audited. This key is the master wallet and rebuilds every managed wallet." : "Shows the pool seed after a password check. Every reveal is audited. Import it into MetaMask to see the master as account 1."}</p>
         <button type="button" className={outlineBtn} onClick={revealSeed} disabled={revealing}>
-          {revealing ? <Loader2 size={14} className="animate-spin" /> : <Eye size={14} />} Reveal seed
+          {revealing ? <Loader2 size={14} className="animate-spin" /> : <Eye size={14} />} {isKeyPool ? "Reveal private key" : "Reveal seed"}
         </button>
       </section>
 
@@ -538,7 +541,7 @@ function SettingsTab({ poolId, pool, onChanged }: { poolId: string; pool: { name
         </p>
       </Modal>
 
-      <RevealMnemonicModal open={reveal !== null} mnemonic={reveal?.mnemonic ?? ""} masterAddress={pool.masterAddress} accountPath={reveal?.accountPath} mode="reveal" onClose={() => setReveal(null)} />
+      <RevealMnemonicModal open={reveal !== null} mnemonic={reveal?.secret ?? ""} seedType={reveal?.seedType} masterAddress={pool.masterAddress} accountPath={reveal?.accountPath} mode="reveal" onClose={() => setReveal(null)} />
       {reauthDialog}
     </div>
   );

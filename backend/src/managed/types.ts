@@ -75,11 +75,15 @@ export interface ApiError {
 
 // ─── Domain objects as returned by the API ───────────────────────────────────
 
+/** What a pool's encrypted secret is: a BIP-39 phrase or an imported private key. */
+export type PoolSeedType = "MNEMONIC" | "PRIVATE_KEY";
+
 export interface PoolSummary {
   id: string;
   name: string;
   network: Network;
   masterAddress: string;
+  seedType: PoolSeedType;
   walletCount: number;
   status: PoolStatus;
   createdAt: string;
@@ -269,8 +273,13 @@ export interface ListPoolsResponse {
 export interface CreatePoolRequest {
   name: string;
   network: Network;
-  /** Optional existing BIP-39 phrase to import. Omit to generate 12 words. */
+  /** Optional existing BIP-39 phrase to import. Omit both secrets to generate 12 words. */
   mnemonic?: string;
+  /**
+   * Optional existing private key (0x + 64 hex). The key's wallet becomes the
+   * master; managed wallets derive from it. Mutually exclusive with `mnemonic`.
+   */
+  privateKey?: string;
 }
 export interface CreatePoolResponse {
   pool: Pool;
@@ -291,7 +300,11 @@ export interface UpdatePoolResponse {
 }
 
 export interface RevealMnemonicResponse {
-  mnemonic: string;
+  seedType: PoolSeedType;
+  /** Present when seedType is MNEMONIC. */
+  mnemonic?: string;
+  /** Present when seedType is PRIVATE_KEY. */
+  privateKey?: string;
   masterAddress: string;
   accountPath: string;
 }

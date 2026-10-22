@@ -10,7 +10,7 @@
  */
 import { randomBytes, randomUUID } from "crypto";
 import { KNOWN_TOKENS } from "../../src/managed/chain/knownTokens";
-import { HDNodeWallet, Mnemonic } from "ethers";
+import { HDNodeWallet, Mnemonic, Wallet, computeHmac, toUtf8Bytes } from "ethers";
 import express from "express";
 import session from "express-session";
 import { Client } from "pg";
@@ -544,6 +544,64 @@ describe.skipIf(!dbAvailable)("against the throwaway database", () => {
     const res = await agent.get(`/api/admin/managed/transfers?poolId=${poolId}`);
     expect(res.status).toBe(200);
     expect(res.body).toEqual({ jobs: [], total: 0, byStatus: {} });
+  });
+
+  describe("private-key pools", () => {
+    // A fresh random key per run: managed wallet addresses are globally unique.
+    const key = Wallet.createRandom().privateKey;
+    const keyAddress = new Wallet(key).address;
+    let keyPoolId = "";
+
+    afterAll(async () => {
+      if (keyPoolId) {
+        await db.query("DELETE FROM managed_audits WHERE pool_id = $1", [keyPoolId]);
+        await db.query("DELETE FROM managed_pools WHERE id = $1", [keyPoolId]);
+      }
+    });
+
+    it("rejects a malformed key and a request with both a phrase and a key", async () => {
+      const ok = await agent.post("/api/admin/managed/reauth").send({ password: PASSWORD });
+      expect(ok.status).toBe(200);
+      const bad = await agent.post("/api/admin/managed/pools").send({ name: "Bad key", network: "bscTestnet", privateKey: "0x1234" });
+      expect(bad.status).toBe(400);
+      expect(bad.body.code).toBe("INVALID_PRIVATE_KEY");
+      const both = await agent
+        .post("/api/admin/managed/pools")
+        .send({ name: "Both", network: "bscTestnet", privateKey: key, mnemonic: "test test test test test test test test test test test junk" });
+      expect(both.status).toBe(400);
+      expect(both.body.code).toBe("CONFLICTING_SECRETS");
+    });
+
+    it("creates a pool whose master is the imported key's wallet, without echoing the key", async () => {
+      const res = await agent.post("/api/admin/managed/pools").send({ name: "Key pool", network: "bscTestnet", privateKey: key.slice(2) });
+      expect(res.status).toBe(201);
+      keyPoolId = res.body.pool.id;
+      expect(res.body.masterAddress).toBe(keyAddress);
+      expect(res.body.pool.seedType).toBe("PRIVATE_KEY");
+      expect(JSON.stringify(res.body).toLowerCase()).not.toContain(key.slice(2).toLowerCase());
+
+      const list = await agent.get("/api/admin/managed/pools");
+      const row = list.body.pools.find((p: { id: string }) => p.id === keyPoolId);
+      expect(row.seedType).toBe("PRIVATE_KEY");
+      const stored = await db.query("SELECT seed_type, mnemonic_ciphertext FROM managed_pools WHERE id = $1", [keyPoolId]);
+      expect(stored.rows[0].seed_type).toBe("PRIVATE_KEY");
+      expect(String(stored.rows[0].mnemonic_ciphertext).toLowerCase()).not.toContain(key.slice(2).toLowerCase());
+    });
+
+    it("generates wallets derived from the key (documented HMAC seed, m/44'/60'/0'/0/i)", async () => {
+      const res = await agent.post(`/api/admin/managed/pools/${keyPoolId}/wallets/generate`).send({ count: 2 });
+      expect(res.status).toBe(201);
+      const account = HDNodeWallet.fromSeed(computeHmac("sha512", toUtf8Bytes("HolderForge managed wallets v1"), key)).derivePath("m/44'/60'/0'/0");
+      expect(res.body.created.map((w: { address: string }) => w.address)).toEqual([account.deriveChild(1).address, account.deriveChild(2).address]);
+      expect(res.body.created.map((w: { address: string }) => w.address)).not.toContain(keyAddress);
+    });
+
+    it("reveal returns the private key (not a mnemonic) after re-auth", async () => {
+      const res = await agent.post(`/api/admin/managed/pools/${keyPoolId}/reveal-mnemonic`).send({});
+      expect(res.status).toBe(200);
+      expect(res.body).toMatchObject({ seedType: "PRIVATE_KEY", privateKey: key.toLowerCase(), masterAddress: keyAddress });
+      expect(res.body.mnemonic).toBeUndefined();
+    });
   });
 
   describe("SR-08: idempotency keys are scoped per user and a reused key must match", () => {

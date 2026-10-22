@@ -6,6 +6,8 @@ import { ManagedApiError } from "../service/errors";
 
 /** Postgres SQLSTATE for "relation does not exist". */
 const UNDEFINED_TABLE = "42P01";
+/** Postgres SQLSTATE for "column does not exist": a later migration (e.g. 0002) is missing. */
+const UNDEFINED_COLUMN = "42703";
 
 const RESERVE_STATUS: Record<PoolReserveError["code"], number> = {
   POOL_NOT_FOUND: 404,
@@ -20,7 +22,8 @@ function pgCode(err: unknown): string | undefined {
 }
 
 export function isNotMigratedError(err: unknown): boolean {
-  return pgCode(err) === UNDEFINED_TABLE;
+  const code = pgCode(err);
+  return code === UNDEFINED_TABLE || code === UNDEFINED_COLUMN;
 }
 
 /**

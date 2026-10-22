@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import toast from "react-hot-toast";
-import { Plus, Loader2, RefreshCw, KeyRound, Sparkles, Archive } from "lucide-react";
+import { Plus, Loader2, RefreshCw, KeyRound, Sparkles, Archive, Eye, EyeOff } from "lucide-react";
 import type { Network, Pool } from "@/lib/managedTypes";
 import RouteErrorFallback from "@/components/RouteErrorFallback";
 import StatCard from "@/components/ui/StatCard";
@@ -14,7 +14,12 @@ import { useReauth } from "@/components/managed/ReauthDialog";
 import { apiErrorMessage, isValidMnemonicShape, mnemonicWordCount, networkLabel } from "@/components/managed/format";
 import { ghostBtn, inputCls, outlineBtn, primaryBtn, selectCls, useManagedTheme } from "@/components/managed/theme";
 
-type SeedSource = "generate" | "import";
+type SeedSource = "generate" | "import" | "privateKey";
+
+/** 0x + 64 hex, or 64 hex. The server does the full secp256k1 range check. */
+function isPrivateKeyShape(v: string): boolean {
+  return /^(0x)?[0-9a-fA-F]{64}$/.test(v.trim());
+}
 
 /** F1: list pools, create a pool (generate or import seed). */
 export default function PoolsPage() {
@@ -45,7 +50,7 @@ export default function PoolsPage() {
           <p className={`text-[11px] uppercase tracking-widest ${soft}`}>Admin · Managed wallets</p>
           <h1 className={`mt-1 font-display text-xl font-semibold tracking-tight ${ink}`}>Pools</h1>
           <p className={`mt-1 max-w-2xl text-xs leading-relaxed ${soft}`}>
-            One encrypted master seed per pool. Managed wallets are derived from it, handed to holders as read-only addresses, and swept back by the master.
+            One encrypted master secret per pool, a seed phrase or a private key. Managed wallets are derived from it, handed to holders as read-only addresses, and swept back by the master.
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -132,9 +137,11 @@ function NewPoolDialog({
   const [network, setNetwork] = useState<Network>("bscTestnet");
   const [source, setSource] = useState<SeedSource>("generate");
   const [phrase, setPhrase] = useState("");
+  const [privateKey, setPrivateKey] = useState("");
+  const [showKey, setShowKey] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const { withReauth, reauthDialog } = useReauth("Creating a pool stores a new encrypted master seed.");
+  const { withReauth, reauthDialog } = useReauth("Creating a pool stores a new encrypted master secret.");
 
   useEffect(() => {
     if (open) {
@@ -142,19 +149,28 @@ function NewPoolDialog({
       setNetwork("bscTestnet");
       setSource("generate");
       setPhrase("");
+      setPrivateKey("");
+      setShowKey(false);
       setBusy(false);
       setError("");
     }
   }, [open]);
 
   const words = mnemonicWordCount(phrase);
-  const phraseOk = source === "generate" || isValidMnemonicShape(phrase);
-  const canSubmit = name.trim().length > 0 && phraseOk;
+  const phraseOk = source !== "import" || isValidMnemonicShape(phrase);
+  const keyOk = source !== "privateKey" || isPrivateKeyShape(privateKey);
+  const canSubmit = name.trim().length > 0 && phraseOk && keyOk;
 
   function submit(e: React.FormEvent): void {
     e.preventDefault();
     if (!canSubmit) {
-      setError(source === "import" && !phraseOk ? "Phrase must be 12 or 24 lowercase words" : "Name is required");
+      setError(
+        source === "import" && !phraseOk
+          ? "Phrase must be 12 or 24 lowercase words"
+          : source === "privateKey" && !keyOk
+            ? "Private key must be 64 hex characters, with or without 0x"
+            : "Name is required"
+      );
       return;
     }
     withReauth(async () => {
@@ -165,14 +181,19 @@ function NewPoolDialog({
           name: name.trim(),
           network,
           ...(source === "import" ? { mnemonic: phrase.trim().split(/\s+/).join(" ") } : {}),
+          ...(source === "privateKey" ? { privateKey: privateKey.trim() } : {}),
         });
-        toast.success(`Pool "${res.pool.name}" created`);
+        toast.success(
+          source === "privateKey"
+            ? `Pool "${res.pool.name}" created. Master wallet: ${res.masterAddress.slice(0, 8)}…${res.masterAddress.slice(-6)}`
+            : `Pool "${res.pool.name}" created`
+        );
         if (source === "generate") {
           // The create response never echoes the seed; fetch it once for the
           // one-time "save your recovery phrase" modal (re-auth is still valid).
           try {
             const r = await managedApi.revealMnemonic(res.pool.id);
-            onCreated(res.pool, { mnemonic: r.mnemonic, accountPath: r.accountPath });
+            onCreated(res.pool, { mnemonic: r.mnemonic ?? "", accountPath: r.accountPath });
           } catch (err) {
             toast.error(apiErrorMessage(err, "Pool created, but the phrase could not be revealed. Use Settings › Reveal seed."));
             onCreated(res.pool, null);
@@ -181,6 +202,7 @@ function NewPoolDialog({
           onCreated(res.pool, null);
         }
         setPhrase("");
+        setPrivateKey("");
       } catch (err) {
         setError(apiErrorMessage(err, "Could not create the pool"));
       } finally {
@@ -194,9 +216,9 @@ function NewPoolDialog({
       <Modal
         open={open}
         title="New pool"
-        subtitle="A pool is one master seed on one network. The master wallet is derivation index 0."
+        subtitle="A pool is one master wallet and the managed wallets derived from its secret, on one network."
         onClose={busy ? undefined : onClose}
-        size="md"
+        size="lg"
         footer={
           <>
             <button type="button" className={outlineBtn} onClick={onClose} disabled={busy}>
@@ -233,11 +255,12 @@ function NewPoolDialog({
 
           <fieldset>
             <legend className="mb-1.5 text-xs font-medium text-text-secondary">Seed source</legend>
-            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
               {(
                 [
                   { v: "generate", t: "Generate 12 words", d: "A fresh BIP-39 phrase is generated server side and shown once." },
                   { v: "import", t: "Import phrase", d: "Use an existing 12 or 24 word phrase (e.g. from MetaMask)." },
+                  { v: "privateKey", t: "Import private key", d: "Your existing wallet becomes the master; wallets derive from its key." },
                 ] as Array<{ v: SeedSource; t: string; d: string }>
               ).map((o) => (
                 <label key={o.v} className={`flex cursor-pointer gap-2 rounded-lg border p-3 ${source === o.v ? "border-accent bg-accent/10" : "border-border"}`}>
@@ -251,7 +274,43 @@ function NewPoolDialog({
             </div>
           </fieldset>
 
-          {source === "import" ? (
+          {source === "privateKey" ? (
+            <div className="space-y-2">
+              <div>
+                <div className="mb-1 flex items-center justify-between">
+                  <label className="text-xs font-medium text-text-secondary">Private key</label>
+                  <span className={`font-mono text-[10px] ${privateKey && keyOk ? "text-success" : soft}`}>
+                    {privateKey ? (keyOk ? "valid format" : "64 hex characters") : "0x + 64 hex"}
+                  </span>
+                </div>
+                <div className="relative">
+                  <input
+                    type={showKey ? "text" : "password"}
+                    value={privateKey}
+                    onChange={(e) => setPrivateKey(e.target.value)}
+                    spellCheck={false}
+                    autoComplete="off"
+                    placeholder="0x… or 64 hex characters"
+                    className={`${inputCls} pr-10 ${privateKey && !keyOk ? "!border-danger" : ""}`}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowKey((v) => !v)}
+                    className="absolute right-2 top-1/2 -translate-y-1/2 rounded p-1 text-text-muted hover:text-accent"
+                    aria-label={showKey ? "Hide private key" : "Show private key"}
+                  >
+                    {showKey ? <EyeOff size={15} /> : <Eye size={15} />}
+                  </button>
+                </div>
+                <p className={`mt-1 text-[11px] ${soft}`}>Sent once over HTTPS, encrypted at rest with AES-256-GCM, never logged or echoed back.</p>
+              </div>
+              <ul className={`space-y-1 rounded-lg border border-border p-3 text-[11px] ${bgInset} ${soft}`}>
+                <li>• The wallet for this key becomes the pool <span className={ink}>master</span>: sweeps arrive there and gas top-ups come from it.</li>
+                <li>• Managed wallets are derived from this key, so the key is their only backup. Keep it safe.</li>
+                <li>• They cannot be imported into MetaMask by seed phrase; the app or <span className="font-mono">derive-from-key</span> rebuilds them from the key.</li>
+              </ul>
+            </div>
+          ) : source === "import" ? (
             <div>
               <div className="mb-1 flex items-center justify-between">
                 <label className="text-xs font-medium text-text-secondary">Recovery phrase</label>

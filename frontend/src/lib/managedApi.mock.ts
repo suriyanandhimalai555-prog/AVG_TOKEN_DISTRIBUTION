@@ -256,6 +256,7 @@ function summaryOf(p: PoolRow): PoolSummary {
     name: p.name,
     network: p.network,
     masterAddress: p.masterAddress,
+    seedType: p.seedType,
     walletCount: state.wallets.filter((w) => w.poolId === p.id).length,
     status: p.status,
     createdAt: p.createdAt,
@@ -290,6 +291,7 @@ function addPool(name: string, network: Network, createdAgoMs: number, masterNat
     name,
     network,
     masterAddress: fakeAddress(),
+    seedType: "MNEMONIC",
     walletCount: 0,
     status: "ACTIVE",
     createdAt: agoIso(createdAgoMs),
@@ -736,7 +738,7 @@ export const managedApi = {
     await delay();
     const p = findPool(id);
     p.mnemonicRevealedAt = nowIso();
-    return { mnemonic: p.mnemonic, masterAddress: p.masterAddress, accountPath: p.accountPath };
+    return { seedType: p.seedType, mnemonic: p.mnemonic, masterAddress: p.masterAddress, accountPath: p.accountPath };
   },
 
   // Wallets
