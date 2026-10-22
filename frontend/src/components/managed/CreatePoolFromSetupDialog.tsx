@@ -214,6 +214,7 @@ export default function CreatePoolFromSetupDialog({ offer, onContinue }: Props) 
             <li>• The signing wallet you entered becomes the pool master: sweeps arrive there and gas top-ups come from it.</li>
             <li>• Managed wallets are derived from the same private key, so that key stays their only backup.</li>
             <li>• {tokenLabel} is added to the pool's token list so its balances show everywhere.</li>
+            <li>• Generate then creates this session's wallets inside the pool, so the tokens you distribute show there and the master can sweep them back.</li>
           </ul>
         </div>
       ) : null}
@@ -278,7 +279,11 @@ export default function CreatePoolFromSetupDialog({ offer, onContinue }: Props) 
               )}
             </p>
           </div>
-          <p className={`text-[11px] ${soft}`}>Next in the pool: Generate wallets, hand out view links, and sweep back with Sweep to master.</p>
+          <p className={`text-[11px] ${soft}`}>
+            {outcome.poolNetwork === offer.network
+              ? "Next: Continue to Generate. “Pool wallets” is preselected, so this session's wallets are created in the pool and the tokens you distribute show up there."
+              : "Generate cannot use that pool for this session because it is on another network; the session keeps the normal wallet modes."}
+          </p>
         </div>
       ) : null}
     </Modal>

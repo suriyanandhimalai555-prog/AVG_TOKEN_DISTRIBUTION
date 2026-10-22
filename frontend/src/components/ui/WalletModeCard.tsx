@@ -1,10 +1,17 @@
+import type { ReactNode } from "react";
+
+/** Modes the core POST /api/generate understands. */
 export type WalletMode = "HD_SINGLE_SEED" | "INDEPENDENT_SEEDS";
+/** Generate page choices: the core modes plus Managed Wallets pool wallets (admins). */
+export type GenerateMode = WalletMode | "MANAGED_POOL";
 
 interface WalletModeCardProps {
-  mode: WalletMode;
+  mode: GenerateMode;
   selected: boolean;
   onSelect: () => void;
   disabled?: boolean;
+  /** Extra line under the description (e.g. which pool, or why it is unavailable). */
+  detail?: ReactNode;
 }
 
 const CARD_CONFIG = {
@@ -28,6 +35,16 @@ const CARD_CONFIG = {
       { label: "MNEMONIC", value: "UNIQUE", color: "#00d4aa" },
     ],
   },
+  MANAGED_POOL: {
+    title: "Pool wallets",
+    description:
+      "Wallets come from the Managed Wallets pool of this signing wallet. Distributed tokens show in the pool and only the master can move them.",
+    stats: [
+      { label: "BALANCES", value: "IN POOL", color: "#00d4aa" },
+      { label: "CONTROL", value: "MASTER", color: "#22c55e" },
+      { label: "KEYS ON DISK", value: "NONE", color: "#e8e8e8" },
+    ],
+  },
 } as const;
 
 export default function WalletModeCard({
@@ -35,6 +52,7 @@ export default function WalletModeCard({
   selected,
   onSelect,
   disabled = false,
+  detail,
 }: WalletModeCardProps) {
   const config = CARD_CONFIG[mode];
 
@@ -61,6 +79,11 @@ export default function WalletModeCard({
               RECOMMENDED
             </span>
           )}
+          {mode === "MANAGED_POOL" && (
+            <span className="text-[10px] font-mono px-2 py-0.5 border border-[#3b82f6] text-[#60a5fa]">
+              MANAGED WALLETS
+            </span>
+          )}
         </div>
         {selected ? (
           <div className="w-3 h-3 rounded-full border border-[#00d4aa] bg-[#00d4aa] flex-shrink-0" />
@@ -76,6 +99,7 @@ export default function WalletModeCard({
       )}
 
       <p className="mt-3 text-[12px] font-mono text-[#6b6b6b] leading-relaxed">{config.description}</p>
+      {detail ? <div className="mt-2 text-[11px] font-mono leading-relaxed text-[#a3a3a3]">{detail}</div> : null}
 
       <div className="mt-3 flex gap-4">
         {config.stats.map((stat) => (

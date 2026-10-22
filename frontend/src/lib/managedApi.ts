@@ -53,6 +53,8 @@ import type {
   UpdateWalletRequest,
   UpdateWalletResponse,
   WalletViewResponse,
+  SessionPoolGenerateResponse,
+  SessionPoolMatch,
 } from "@/lib/managedTypes";
 
 /** Same base the shared axios instance uses (see lib/api.ts). */
@@ -124,6 +126,21 @@ export const managedApi = {
     const { data } = await api.post<GenerateWalletsResponse>(
       `${ADMIN}/pools/${encodeURIComponent(poolId)}/wallets/generate`,
       req
+    );
+    return data;
+  },
+
+  // Distribution sessions: generate the session's wallets inside the pool whose
+  // master is the signing wallet. POST because the key goes in the body.
+  async findSessionPool(sessionId: string, privateKey: string): Promise<SessionPoolMatch> {
+    const { data } = await api.post<SessionPoolMatch>(`${ADMIN}/sessions/${encodeURIComponent(sessionId)}/pool`, { privateKey });
+    return data;
+  },
+
+  async generateSessionFromPool(sessionId: string, privateKey: string): Promise<SessionPoolGenerateResponse> {
+    const { data } = await api.post<SessionPoolGenerateResponse>(
+      `${ADMIN}/sessions/${encodeURIComponent(sessionId)}/generate`,
+      { privateKey }
     );
     return data;
   },

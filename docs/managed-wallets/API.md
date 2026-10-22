@@ -98,6 +98,28 @@ Response `RotateViewTokenResponse` `{ "viewToken": "…64 hex…", "viewUrl": "�
 
 ---
 
+## Distribution sessions
+
+The Generate step of a distribution session can use the pool whose master is
+the session's signing wallet ("Pool wallets"), so the tokens it distributes
+land in pool wallets. POST because the signing key travels in the body.
+
+### POST /sessions/:sessionId/pool
+Request `{ "privateKey": "0x…" }` (the session's signing key)
+Response 200 `SessionPoolMatch`
+```json
+{ "sessionId": "…", "network": "bscTestnet", "signingAddress": "0x…", "pool": { "id": "…", "name": "…" }, "reason": null, "remaining": 9995, "needed": 5 }
+```
+`reason` is `NO_POOL`, `NETWORK_MISMATCH`, `POOL_ARCHIVED` or `POOL_FULL` when the pool cannot be used.
+Errors: 400 `INVALID_PRIVATE_KEY`, 404 `SESSION_NOT_FOUND` (missing or another user's).
+
+### POST /sessions/:sessionId/generate
+Request `{ "privateKey": "0x…" }`. Replaces the session's wallets with `totalWallets` new pool
+wallets (labels `Session <id> #<index>`), writes `output/wallets.csv` for prepare (empty privateKey
+column) and tracks the session token.
+Response 201 `{ "status": "done", "sessionId": "…", "pool": PoolSummary, "created": 5, "fromIndex": 1, "toIndex": 5 }`
+Errors: 409 `NO_POOL_FOR_WALLET`, `POOL_NETWORK_MISMATCH`, `POOL_ARCHIVED`, `POOL_LIMIT_REACHED`, `SESSION_BUSY`; 404 `SESSION_NOT_FOUND`.
+
 ## Deposits and treasury
 
 ### GET /pools/:id/deposits?skip=0&limit=50&asset=

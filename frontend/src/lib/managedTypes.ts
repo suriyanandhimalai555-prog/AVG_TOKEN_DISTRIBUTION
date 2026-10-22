@@ -322,6 +322,31 @@ export interface GenerateWalletsResponse {
   nextIndex: number;
 }
 
+// ─── Distribution session → pool ─────────────────────────────────────────────
+
+/** Why a session cannot generate pool wallets (null: it can). */
+export type SessionPoolReason = "NO_POOL" | "NETWORK_MISMATCH" | "POOL_ARCHIVED" | "POOL_FULL";
+
+export interface SessionPoolMatch {
+  sessionId: string;
+  network: Network;
+  /** Address of the session's signing wallet (the would-be pool master). */
+  signingAddress: string;
+  pool: PoolSummary | null;
+  reason: SessionPoolReason | null;
+  remaining: number;
+  needed: number;
+}
+
+export interface SessionPoolGenerateResponse {
+  status: "done";
+  sessionId: string;
+  pool: PoolSummary;
+  created: number;
+  fromIndex: number;
+  toIndex: number;
+}
+
 export interface ListWalletsQuery {
   skip?: number;
   limit?: number;

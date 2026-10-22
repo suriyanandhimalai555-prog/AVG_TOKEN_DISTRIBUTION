@@ -27,6 +27,7 @@ import { optionalInt, optionalString, requireUuid } from "../service/common";
 import { validation } from "../service/errors";
 import { indexerStatus, lastBlockByNetwork, runIndexerNow } from "../service/indexerService";
 import { createPool, getPool, listPools, revealMnemonic, updatePool } from "../service/poolService";
+import { findSessionPool, generateSessionWalletsFromPool } from "../service/sessionPoolService";
 import { listTokens, setTokenHidden, trackToken } from "../service/tokenService";
 import {
   createTransfer,
@@ -186,6 +187,27 @@ export function createAdminRouter(): Router {
       res.setHeader("Content-Type", "text/csv; charset=utf-8");
       res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
       res.send(csv);
+    })
+  );
+
+  // ─── Distribution sessions → pool ───────────────────────────────────────────
+  // POST (not GET) because the signing key travels in the body, never in a URL.
+
+  router.post(
+    "/sessions/:sessionId/pool",
+    wrap(async (req, res) => {
+      noStore(res);
+      res.json(await findSessionPool(userId(req), requireUuid(req.params.sessionId, "sessionId"), req.body));
+    })
+  );
+
+  router.post(
+    "/sessions/:sessionId/generate",
+    wrap(async (req, res) => {
+      noStore(res);
+      res.status(201).json(
+        await generateSessionWalletsFromPool(userId(req), requireUuid(req.params.sessionId, "sessionId"), req.body)
+      );
     })
   );
 

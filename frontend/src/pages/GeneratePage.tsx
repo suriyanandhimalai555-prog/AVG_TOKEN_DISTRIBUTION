@@ -1,8 +1,8 @@
 import { useState, useEffect } from "react";
-import { useNavigate } from "react-router-dom";
-import { useQuery } from "@tanstack/react-query";
+import { Link, useNavigate } from "react-router-dom";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import toast from "react-hot-toast";
-import { Eye, EyeOff, Download, ArrowRight, ArrowLeft } from "lucide-react";
+import { Eye, EyeOff, Download, ArrowRight, ArrowLeft, Wallet as WalletIcon } from "lucide-react";
 import axios from "axios";
 import { generateApi, statusApi } from "@/lib/api";
 import { store } from "@/lib/store";
@@ -10,14 +10,45 @@ import { fmt, fmtDuration, pct } from "@/lib/utils";
 import ProgressBar from "@/components/ui/ProgressBar";
 import StatusBadge from "@/components/ui/StatusBadge";
 import AddressCell from "@/components/ui/AddressCell";
-import WalletModeCard, { type WalletMode } from "@/components/ui/WalletModeCard";
+import WalletModeCard, { type GenerateMode } from "@/components/ui/WalletModeCard";
 import { api } from "@/lib/api";
 import { useTheme } from "@/theme/ThemeProvider";
+import { useAuth } from "@/hooks/useAuth";
+import { managedApi, useManagedEnabled } from "@/components/managed/client";
+import { apiErrorMessage } from "@/components/managed/format";
+import type { SessionPoolMatch } from "@/lib/managedTypes";
 
 interface WalletPreview {
   index: number;
   address: string;
   derivationPath: string;
+}
+
+const MODE_LABEL: Record<GenerateMode, string> = {
+  MANAGED_POOL: "POOL WALLETS",
+  INDEPENDENT_SEEDS: "INDEPENDENT SEEDS",
+  HD_SINGLE_SEED: "HD SINGLE SEED",
+};
+
+/** Pool wallets are stored with derivationPath "pool:<poolId>/<index>". */
+function poolIdOf(derivationPath: string | undefined): string | null {
+  if (!derivationPath?.startsWith("pool:")) return null;
+  return derivationPath.slice(5).split("/")[0] || null;
+}
+
+function poolUnavailableText(match: SessionPoolMatch): string {
+  switch (match.reason) {
+    case "NO_POOL":
+      return "No pool uses this signing wallet as master. Create one from Setup or Managed → Pools.";
+    case "NETWORK_MISMATCH":
+      return `This wallet's pool “${match.pool?.name}” is on ${match.pool?.network === "bscMainnet" ? "BNB Mainnet" : "BNB Testnet"}; this session is on ${match.network === "bscMainnet" ? "BNB Mainnet" : "BNB Testnet"}.`;
+    case "POOL_ARCHIVED":
+      return `Pool “${match.pool?.name}” is archived.`;
+    case "POOL_FULL":
+      return `Pool “${match.pool?.name}” has room for ${match.remaining.toLocaleString()} more wallets; this session needs ${match.needed.toLocaleString()}.`;
+    default:
+      return "";
+  }
 }
 
 export default function GeneratePage() {
@@ -30,9 +61,36 @@ export default function GeneratePage() {
   const rowZebra = isDark ? "bg-[#0f172a]/50" : "bg-[#e8ecf2]";
 
   const sessionId = store.getSessionId();
+  const queryClient = useQueryClient();
   const [loading, setLoading] = useState(false);
   const [mnemonicVisible, setMnemonicVisible] = useState(false);
-  const [walletMode, setWalletMode] = useState<WalletMode>("INDEPENDENT_SEEDS");
+  const [walletMode, setWalletMode] = useState<GenerateMode>("INDEPENDENT_SEEDS");
+  const [modeTouched, setModeTouched] = useState(false);
+
+  // Admins whose signing wallet backs a Managed Wallets pool can generate the
+  // session's wallets inside that pool, so distributed tokens show up there.
+  const { user } = useAuth();
+  const isAdmin = user?.role === "ADMIN";
+  const managed = useManagedEnabled({ enabled: isAdmin });
+  const signingKey = store.getPrivateKey();
+  const { data: poolMatch } = useQuery({
+    // The key is sent in the body only; it never goes into the cache key.
+    queryKey: ["managed", "session-pool", sessionId],
+    queryFn: () => managedApi.findSessionPool(sessionId, signingKey),
+    enabled: isAdmin && managed.ready && !!sessionId && !!signingKey,
+    retry: false,
+    staleTime: 30_000,
+  });
+  const poolUsable = !!poolMatch?.pool && poolMatch.reason === null;
+
+  useEffect(() => {
+    if (poolUsable && !modeTouched) setWalletMode("MANAGED_POOL");
+  }, [poolUsable, modeTouched]);
+
+  function chooseMode(mode: GenerateMode) {
+    setModeTouched(true);
+    setWalletMode(mode);
+  }
 
   const { data: status, refetch: refetchStatus } = useQuery({
     queryKey: ["status", sessionId],
@@ -68,6 +126,10 @@ export default function GeneratePage() {
       toast.error("Private key not found — please restart from Setup");
       return;
     }
+    if (walletMode === "MANAGED_POOL") {
+      await startPoolGenerate(pk);
+      return;
+    }
     setLoading(true);
     try {
       await generateApi.start(sessionId, pk, walletMode);
@@ -80,11 +142,34 @@ export default function GeneratePage() {
     }
   }
 
+  async function startPoolGenerate(pk: string) {
+    setLoading(true);
+    try {
+      const res = await managedApi.generateSessionFromPool(sessionId, pk);
+      toast.success(`${fmt(res.created)} wallets created in pool “${res.pool.name}”`);
+      void queryClient.invalidateQueries({ queryKey: ["wallets-preview", sessionId] });
+      void queryClient.invalidateQueries({ queryKey: ["session", sessionId] });
+      void queryClient.invalidateQueries({ queryKey: ["managed"] });
+      refetchStatus();
+    } catch (err) {
+      toast.error(apiErrorMessage(err, "Could not generate pool wallets"));
+    } finally {
+      setLoading(false);
+    }
+  }
+
   const isGenerating = status?.status === "generating";
   const isDone = (walletsData?.total ?? 0) > 0 && status?.status !== "generating";
-  const progress = pct(status?.sentCount ?? 0, status?.totalWallets ?? 1);
+  // Generated = wallet rows the session has (status.sentCount counts *sent* wallets).
+  const generatedCount = walletsData?.total ?? 0;
+  const progress = pct(generatedCount, status?.totalWallets ?? 1);
   const mnemonic = sessionData?.session?.masterMnemonic;
   const words = mnemonic?.split(" ") ?? [];
+  // What the session's wallets actually are (the cards show what to generate next).
+  const firstPath = walletsData?.wallets?.[0]?.derivationPath;
+  const sessionPoolId = poolIdOf(firstPath);
+  const generatedMode: GenerateMode = sessionPoolId ? "MANAGED_POOL" : firstPath?.startsWith("m/") ? "HD_SINGLE_SEED" : "INDEPENDENT_SEEDS";
+  const showPoolCard = isAdmin && managed.ready && !!poolMatch;
 
   if (!sessionId) {
     return (
@@ -112,7 +197,7 @@ export default function GeneratePage() {
           <h1 className={`text-xl font-mono font-bold uppercase tracking-wide ${ink}`}>Wallet Generation</h1>
           {isDone && (
             <span className="text-[10px] font-mono px-2 py-0.5 border border-[#00d4aa] text-[#00d4aa]">
-              {walletMode === "INDEPENDENT_SEEDS" ? "INDEPENDENT SEEDS" : "HD SINGLE SEED"}
+              {MODE_LABEL[generatedMode]}
             </span>
           )}
         </div>
@@ -125,7 +210,7 @@ export default function GeneratePage() {
           {/* Counter */}
           <div className="dash-card p-6 sm:p-7">
             <div className={`text-5xl font-mono font-bold tabular-nums ${ink}`}>
-              {fmt(status?.sentCount ?? 0).padStart(5, "0")}
+              {fmt(generatedCount).padStart(5, "0")}
               <span className="text-text-muted"> / {fmt(status?.totalWallets ?? 0)}</span>
             </div>
             <p className="text-[11px] font-mono uppercase tracking-widest text-text-muted mt-2">WALLETS GENERATED</p>
@@ -159,21 +244,53 @@ export default function GeneratePage() {
             <p className="text-[11px] uppercase tracking-widest text-[#6b6b6b] font-mono mb-4">
               WALLET GENERATION MODE
             </p>
+            {showPoolCard && poolMatch ? (
+              <div className="mb-3">
+                <WalletModeCard
+                  mode="MANAGED_POOL"
+                  selected={walletMode === "MANAGED_POOL"}
+                  onSelect={() => chooseMode("MANAGED_POOL")}
+                  disabled={isGenerating || !poolUsable}
+                  detail={
+                    poolUsable && poolMatch.pool ? (
+                      <>
+                        Pool <span className="text-[#e8e8e8]">“{poolMatch.pool.name}”</span> · master{" "}
+                        <span className="text-[#e8e8e8]">
+                          {poolMatch.pool.masterAddress.slice(0, 6)}…{poolMatch.pool.masterAddress.slice(-4)}
+                        </span>{" "}
+                        · {fmt(poolMatch.pool.walletCount)} wallets now
+                      </>
+                    ) : (
+                      <span className="text-[#f59e0b]">{poolUnavailableText(poolMatch)}</span>
+                    )
+                  }
+                />
+              </div>
+            ) : null}
             <div className="grid grid-cols-2 gap-3">
               <WalletModeCard
                 mode="HD_SINGLE_SEED"
                 selected={walletMode === "HD_SINGLE_SEED"}
-                onSelect={() => setWalletMode("HD_SINGLE_SEED")}
+                onSelect={() => chooseMode("HD_SINGLE_SEED")}
                 disabled={isGenerating}
               />
               <WalletModeCard
                 mode="INDEPENDENT_SEEDS"
                 selected={walletMode === "INDEPENDENT_SEEDS"}
-                onSelect={() => setWalletMode("INDEPENDENT_SEEDS")}
+                onSelect={() => chooseMode("INDEPENDENT_SEEDS")}
                 disabled={isGenerating}
               />
             </div>
-            {walletMode === "HD_SINGLE_SEED" ? (
+            {walletMode === "MANAGED_POOL" ? (
+              <div className="border border-[#3b82f622] bg-[#3b82f608] p-3 mt-3 flex gap-3 items-start">
+                <span className="text-[#60a5fa] text-sm mt-0.5">●</span>
+                <p className="text-[11px] font-mono text-[#a3a3a3] leading-relaxed">
+                  The session's {fmt(poolMatch?.needed ?? status?.totalWallets ?? 0)} wallets are added to the pool. Tokens you
+                  distribute show in the pool and in Treasury, and Sweep to master brings them back. No private keys are
+                  written to disk: the pool's master key controls every wallet.
+                </p>
+              </div>
+            ) : walletMode === "HD_SINGLE_SEED" ? (
               <div className="border border-[#f59e0b22] bg-[#f59e0b08] p-3 mt-3 flex gap-3 items-start">
                 <span className="text-[#f59e0b] text-sm mt-0.5">⚠</span>
                 <p className="text-[11px] font-mono text-[#f59e0b] leading-relaxed">
@@ -220,6 +337,15 @@ export default function GeneratePage() {
             >
               PROCEED TO PLAN <ArrowRight size={12} />
             </button>
+          )}
+
+          {isDone && sessionPoolId && isAdmin && (
+            <Link
+              to={`/admin/managed/pools/${sessionPoolId}`}
+              className="w-full py-2.5 border border-[#3b82f6] text-[#60a5fa] font-mono text-xs uppercase tracking-widest hover:bg-[#3b82f6] hover:text-white transition-colors flex items-center justify-center gap-2"
+            >
+              <WalletIcon size={12} /> OPEN POOL — BALANCES &amp; SWEEP
+            </Link>
           )}
 
           {/* Mnemonic */}

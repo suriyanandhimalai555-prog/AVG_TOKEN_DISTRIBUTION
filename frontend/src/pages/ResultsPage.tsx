@@ -1,7 +1,7 @@
 import { useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { Download, ArrowLeft } from "lucide-react";
+import { Download, ArrowLeft, ArrowRight, Wallet as WalletIcon } from "lucide-react";
 import { statusApi, exportApi } from "@/lib/api";
 import { api } from "@/lib/api";
 import { store } from "@/lib/store";
@@ -10,10 +10,13 @@ import StatCard from "@/components/ui/StatCard";
 import AddressCell from "@/components/ui/AddressCell";
 import TxHashLink from "@/components/ui/TxHashLink";
 import StatusBadge from "@/components/ui/StatusBadge";
+import { useAuth } from "@/hooks/useAuth";
 
 interface WalletEntry {
   index: number;
   address: string;
+  /** "pool:<poolId>/<index>" when the wallet belongs to a Managed Wallets pool. */
+  derivationPath?: string;
   amount: number;
   sent: boolean;
   failed?: boolean;
@@ -53,6 +56,9 @@ export default function ResultsPage() {
   });
 
   const wallets = walletsData?.wallets ?? [];
+  const { user } = useAuth();
+  const firstPath = wallets[0]?.derivationPath ?? "";
+  const poolId = user?.role === "ADMIN" && firstPath.startsWith("pool:") ? firstPath.slice(5).split("/")[0] : null;
   const total = walletsData?.total ?? 0;
   const totalPages = Math.ceil(total / PAGE_SIZE);
   const isDone = status?.status === "done";
@@ -107,6 +113,27 @@ export default function ResultsPage() {
           </div>
           <StatusBadge status="stopped" />
         </div>
+      )}
+
+      {poolId && (
+        <Link
+          to={`/admin/managed/pools/${poolId}`}
+          className="border border-[#3b82f6]/50 bg-[#3b82f6]/[0.06] p-4 mb-6 flex items-center justify-between gap-4 hover:border-[#3b82f6] transition-colors"
+        >
+          <div className="flex items-start gap-3">
+            <WalletIcon size={16} className="mt-0.5 text-[#60a5fa] shrink-0" />
+            <div>
+              <p className="font-mono text-[#60a5fa] text-sm uppercase tracking-widest font-bold">These are pool wallets</p>
+              <p className="mt-1 text-[11px] font-mono text-text-muted">
+                The tokens sent here show in the Managed Wallets pool. Balances update as deposits confirm; only the
+                master can move them (Sweep to master).
+              </p>
+            </div>
+          </div>
+          <span className="inline-flex shrink-0 items-center gap-1.5 font-mono text-[11px] uppercase tracking-widest text-[#60a5fa]">
+            Open pool <ArrowRight size={12} />
+          </span>
+        </Link>
       )}
 
       {/* Stat cards */}
