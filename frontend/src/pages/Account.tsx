@@ -4,7 +4,6 @@ import { Link, useNavigate } from "react-router-dom";
 import { api } from "@/lib/api";
 import { findPlan } from "@shared/plans";
 import type { AuthSubscription } from "@/lib/authTypes";
-import { ThemeToggleButton } from "@/components/ThemeToggleButton";
 
 interface PayRow {
   chargeId: string;
@@ -84,9 +83,6 @@ export default function AccountPage() {
 
   return (
     <div className="relative min-h-screen bg-terminal text-text-primary font-sans p-6 max-w-6xl mx-auto">
-      <div className="absolute right-4 top-6 z-10">
-        <ThemeToggleButton />
-      </div>
       <div className="grid md:grid-cols-5 gap-6">
         <div className="md:col-span-3 border border-border p-6 rounded-none">
           <div className="flex items-center gap-4">
