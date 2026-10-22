@@ -80,7 +80,7 @@ export default function ManagedWalletTable({
           ) : wallets.length === 0 ? (
             <tr>
               <td colSpan={COLUMNS.length} className={`py-10 text-center text-[11px] ${soft}`}>
-                No wallets yet. Generate some to hand out addresses.
+                No wallets yet. Generate some to hand out addresses, or import a distribution session's wallets.
               </td>
             </tr>
           ) : (
@@ -95,6 +95,14 @@ export default function ManagedWalletTable({
                   <td className={tdCls}>
                     <AddressCell address={w.address} />
                     {disabled ? <span className="ml-1.5 rounded-full border border-border px-1.5 text-[9px] uppercase text-text-muted">disabled</span> : null}
+                    {w.keySource === "IMPORTED" ? (
+                      <span
+                        className="ml-1.5 rounded-full border border-accent/40 px-1.5 text-[9px] uppercase text-accent"
+                        title="Imported with its own key; the pool's master key is not a backup for it"
+                      >
+                        imported
+                      </span>
+                    ) : null}
                   </td>
                   <td className={`${tdCls} ${ink}`}>{w.label ?? <span className="text-text-muted">—</span>}</td>
                   <td className={`${tdCls} max-w-[180px]`}>

@@ -235,7 +235,15 @@ function job(overrides: Partial<TransferJobRow> = {}): TransferJobRow {
 }
 
 function build(
-  opts: { pool?: PoolRow; wallet?: WalletRow; vaultFails?: boolean; realSleep?: boolean; logger?: LoggerPort } = {}
+  opts: {
+    pool?: PoolRow;
+    wallet?: WalletRow;
+    vaultFails?: boolean;
+    realSleep?: boolean;
+    logger?: LoggerPort;
+    /** decryptWalletKey for IMPORTED wallets; omitted = the vault cannot decrypt wallet keys. */
+    walletKey?: (walletId: string) => Promise<string>;
+  } = {}
 ) {
   const provider = new FakeProvider();
   const transfers = new FakeTransfers();
@@ -263,6 +271,7 @@ function build(
         if (opts.vaultFails) throw new Error("key vault unavailable");
         return MNEMONIC;
       },
+      ...(opts.walletKey ? { decryptWalletKey: opts.walletKey } : {}),
     },
     audits: { create: async (a) => void audits.push(a) },
     balances,
@@ -806,5 +815,62 @@ describe("TransferWorker happy path", () => {
     await t.worker.stop();
     expect(t.worker.running).toBe(false);
     expect(t.transfers.patches).toEqual([]);
+  });
+});
+
+describe("TransferWorker with an IMPORTED wallet", () => {
+  const imported = Wallet.createRandom();
+  const importedWallet: WalletRow = {
+    id: "w-imp",
+    poolId: "pool-1",
+    derivationIndex: 7,
+    address: imported.address,
+    status: "ACTIVE",
+    keySource: "IMPORTED",
+  };
+
+  it("signs the transfer with the wallet's own key; the gas top-up still comes from the master", async () => {
+    const asked: string[] = [];
+    const t = build({
+      wallet: importedWallet,
+      walletKey: async (id) => {
+        asked.push(id);
+        return imported.privateKey;
+      },
+    });
+    t.provider.balances.set(MASTER.toLowerCase(), parseUnits("1", 18));
+    t.provider.tokenBalances.set(`${TOKEN}:${imported.address.toLowerCase()}`, parseUnits("100", 18));
+
+    const outcome = await t.worker.processJob(job({ walletId: "w-imp" }));
+
+    expect(outcome.status).toBe("CONFIRMED");
+    expect(asked).toEqual(["w-imp"]);
+    const senders = t.provider.broadcasts.map((raw) => Transaction.from(raw).from);
+    expect(senders).toEqual([MASTER, imported.address]);
+  });
+
+  it("a stored key that does not match the wallet address fails without broadcasting", async () => {
+    const other = Wallet.createRandom();
+    const t = build({ wallet: importedWallet, walletKey: async () => other.privateKey });
+    t.provider.balances.set(MASTER.toLowerCase(), parseUnits("1", 18));
+    t.provider.tokenBalances.set(`${TOKEN}:${imported.address.toLowerCase()}`, parseUnits("100", 18));
+
+    const outcome = await t.worker.processJob(job({ walletId: "w-imp" }));
+
+    expect(outcome.status).toBe("FAILED");
+    expect(t.transfers.last()).toMatchObject({ errorCode: "UNKNOWN", error: "Imported key does not match the wallet address" });
+    expect(t.provider.broadcasts).toHaveLength(0);
+  });
+
+  it("a vault without wallet keys → KEY_VAULT_UNAVAILABLE", async () => {
+    const t = build({ wallet: importedWallet });
+    t.provider.balances.set(MASTER.toLowerCase(), parseUnits("1", 18));
+    t.provider.tokenBalances.set(`${TOKEN}:${imported.address.toLowerCase()}`, parseUnits("100", 18));
+
+    const outcome = await t.worker.processJob(job({ walletId: "w-imp" }));
+
+    expect(outcome.status).toBe("FAILED");
+    expect(t.transfers.last()).toMatchObject({ errorCode: "KEY_VAULT_UNAVAILABLE" });
+    expect(t.provider.broadcasts).toHaveLength(0);
   });
 });

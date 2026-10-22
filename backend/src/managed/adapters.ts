@@ -25,7 +25,7 @@ import { pools } from "./models/pools";
 import { tokens } from "./models/tokens";
 import { transfers } from "./models/transfers";
 import type { TransferPatch } from "./models/transfers";
-import { wallets } from "./models/wallets";
+import { importedKeyAad, wallets } from "./models/wallets";
 import { managedLog } from "./redact";
 import { encodeError } from "./service/transferService";
 
@@ -107,6 +107,11 @@ export const vaultPort: VaultPort = {
     const secret = await pools.getSecret(poolId);
     if (!secret) throw new Error("Pool not found");
     return decryptSecret(secret, poolId);
+  },
+  async decryptWalletKey(walletId) {
+    const key = await wallets.getImportedKey(walletId);
+    if (!key) throw new Error("Wallet has no imported key");
+    return decryptSecret(key, importedKeyAad(walletId));
   },
 };
 

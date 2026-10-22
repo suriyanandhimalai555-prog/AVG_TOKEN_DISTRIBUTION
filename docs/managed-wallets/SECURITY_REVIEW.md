@@ -82,6 +82,27 @@ Re-read read-only: `backend/src/managed/middleware/jsonOnly.ts` (new), `routes/a
 | SR-14 | Info | Open — routed to N10 | `backend/scripts/recover-hd-wallets.ts` still present in the frozen directory (plus new `scripts/managed/testnet-e2e.ts`, which SPEC/ARCHITECTURE list as N8's deliverable and is fine). |
 | SR-15 | Info | Open — routed to N9 | `.env.example` still not appended. |
 
+## 5b. Imported wallets (2026-10-22, migration 0004)
+
+Pools can now hold IMPORTED wallets: a distribution session's existing wallets
+with their own private keys. Controls:
+
+- Keys never pass through the browser: the server rebuilds them from the
+  session's stored seed or `output/wallets.csv` and accepts a key only if it
+  reproduces the wallet's address. Only the session's owner can import it, and
+  the import route requires a fresh re-auth.
+- Each key is stored AES-256-GCM encrypted under `WALLET_ENCRYPTION_KEY` with
+  AAD `managed-wallet:<walletId>`, so a ciphertext cannot be moved to another
+  row. `key_*` columns are never mapped into API responses; audits record
+  counts only.
+- The worker decrypts an imported key only for the job it signs, and checks the
+  derived address against the row before broadcasting (same check as DERIVED).
+
+Accepted change of invariant: for IMPORTED wallets the pool secret is **not**
+the backup. Their keys are recoverable only from the session's seed / key files
+or from the encrypted column (which needs `WALLET_ENCRYPTION_KEY`). The import
+dialog states this, and imported rows are tagged in the wallet table.
+
 ## 6. Verdict
 
 Zero High findings. Of the four Medium findings, SR-01, SR-02 and SR-04 are fixed and verified; SR-03 is partially fixed: the pre-broadcast hash persistence, mempool check and same-nonce re-sign are correct, but the new `shortRpcError` drops the node's "already known" text that ethers only exposes in `err.error.message`, so the ambiguous accepted-then-retried broadcast still clears the hash and can double-send after an admin retry. The three-step fix above (nested message in `shortRpcError`, positive list for "definite rejection" with unknown errors keeping the hash, real-shaped test fixture) closes it. Lows SR-05/06/08/09 and Info SR-12 are fixed; SR-07 (frontend), SR-10, SR-11, SR-13, SR-14, SR-15 remain open by routing or acceptance and do not block enabling the feature.

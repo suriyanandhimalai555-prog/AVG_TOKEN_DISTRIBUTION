@@ -122,6 +122,8 @@ export interface ManagedWallet {
   poolId: string;
   derivationIndex: number;
   address: string;
+  /** IMPORTED: brought in with its own key (e.g. from a distribution session). Absent on older servers. */
+  keySource?: "DERIVED" | "IMPORTED";
   label: string | null;
   holderName: string | null;
   holderEmail: string | null;
@@ -336,6 +338,51 @@ export interface SessionPoolMatch {
   reason: SessionPoolReason | null;
   remaining: number;
   needed: number;
+}
+
+// ─── Import a distribution session's wallets into a pool ─────────────────────
+
+export type SessionWalletMode = "HD" | "INDEPENDENT" | "POOL";
+export type ImportKeySource = "SESSION_SEED" | "WALLETS_CSV" | "MIXED" | null;
+
+export interface ImportableSession {
+  id: string;
+  shortId: string;
+  status: string;
+  network: Network;
+  tokenName: string;
+  tokenAddress: string;
+  totalWallets: number;
+  walletCount: number;
+  inThisPool: number;
+  inOtherPools: number;
+  mode: SessionWalletMode;
+  hasSeed: boolean;
+  createdAt: string;
+}
+
+export interface ListImportableSessionsResponse {
+  network: Network;
+  sessions: ImportableSession[];
+}
+
+export interface SessionImportPreview {
+  sessionId: string;
+  mode: SessionWalletMode;
+  total: number;
+  importable: number;
+  alreadyInPool: number;
+  inOtherPools: number;
+  keysUnavailable: number;
+  keySource: ImportKeySource;
+  remaining: number;
+}
+
+export interface SessionImportResponse extends SessionImportPreview {
+  imported: number;
+  fromIndex: number | null;
+  toIndex: number | null;
+  pool: PoolSummary;
 }
 
 export interface SessionPoolGenerateResponse {

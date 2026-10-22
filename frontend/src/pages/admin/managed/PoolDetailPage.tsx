@@ -13,6 +13,7 @@ import NetworkBadge from "@/components/managed/NetworkBadge";
 import SeedTypeBadge from "@/components/managed/SeedTypeBadge";
 import ManagedWalletTable from "@/components/managed/ManagedWalletTable";
 import GenerateWalletsDialog from "@/components/managed/GenerateWalletsDialog";
+import ImportSessionDialog from "@/components/managed/ImportSessionDialog";
 import AssignHolderDialog from "@/components/managed/AssignHolderDialog";
 import TransferDialog from "@/components/managed/TransferDialog";
 import SweepDialog from "@/components/managed/SweepDialog";
@@ -145,7 +146,7 @@ export default function PoolDetailPage() {
 
 // ─── Wallets tab (F2) ────────────────────────────────────────────────────────
 
-function WalletsTab({ poolId, pool, archived, onChanged, asset }: { poolId: string; pool: { masterAddress: string; network: "bscMainnet" | "bscTestnet"; nextIndex: number }; archived: boolean; onChanged: () => void; asset: AssetOption | null }) {
+function WalletsTab({ poolId, pool, archived, onChanged, asset }: { poolId: string; pool: { name: string; masterAddress: string; network: "bscMainnet" | "bscTestnet"; nextIndex: number }; archived: boolean; onChanged: () => void; asset: AssetOption | null }) {
   const { soft, bgInset } = useManagedTheme();
   const qc = useQueryClient();
   const [search, setSearch] = useState("");
@@ -153,6 +154,7 @@ function WalletsTab({ poolId, pool, archived, onChanged, asset }: { poolId: stri
   const [page, setPage] = useState(0);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [showGenerate, setShowGenerate] = useState(false);
+  const [showImport, setShowImport] = useState(false);
   const [showSweep, setShowSweep] = useState(false);
   const [assigning, setAssigning] = useState<ManagedWalletWithBalances | null>(null);
   const [transferring, setTransferring] = useState<ManagedWalletWithBalances | null>(null);
@@ -207,6 +209,15 @@ function WalletsTab({ poolId, pool, archived, onChanged, asset }: { poolId: stri
           </button>
           <button type="button" className={outlineBtn} onClick={() => setShowSweep(true)} disabled={archived || total === 0}>
             <Layers size={14} /> Sweep to master{selected.size ? ` (${selected.size})` : ""}
+          </button>
+          <button
+            type="button"
+            className={outlineBtn}
+            onClick={() => setShowImport(true)}
+            disabled={archived || remaining < 1}
+            title="Bring a distribution session's existing wallets into this pool"
+          >
+            <Download size={14} /> Import wallets
           </button>
           <button type="button" className={primaryBtn} onClick={() => setShowGenerate(true)} disabled={archived || remaining < 1}>
             <Plus size={14} /> Generate wallets
@@ -277,6 +288,7 @@ function WalletsTab({ poolId, pool, archived, onChanged, asset }: { poolId: stri
       </div>
 
       <GenerateWalletsDialog open={showGenerate} poolId={poolId} remaining={remaining} nextIndex={pool.nextIndex} onClose={() => setShowGenerate(false)} onGenerated={refreshWallets} />
+      <ImportSessionDialog open={showImport} poolId={poolId} poolName={pool.name} onClose={() => setShowImport(false)} onImported={refreshWallets} />
       <AssignHolderDialog open={assigning !== null} wallet={assigning} onClose={() => setAssigning(null)} onSaved={refreshWallets} />
       <TransferDialog open={transferring !== null} wallet={transferring} pool={{ masterAddress: pool.masterAddress, network: pool.network }} onClose={() => setTransferring(null)} />
       <SweepDialog open={showSweep} poolId={poolId} masterAddress={pool.masterAddress} network={pool.network} selectedWalletIds={[...selected]} initialAsset={asset?.asset ?? null} onClose={() => setShowSweep(false)} />

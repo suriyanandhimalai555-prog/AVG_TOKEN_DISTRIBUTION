@@ -28,6 +28,7 @@ import { validation } from "../service/errors";
 import { indexerStatus, lastBlockByNetwork, runIndexerNow } from "../service/indexerService";
 import { createPool, getPool, listPools, revealMnemonic, updatePool } from "../service/poolService";
 import { findSessionPool, generateSessionWalletsFromPool } from "../service/sessionPoolService";
+import { importSessionWallets, listImportableSessions, previewSessionImport } from "../service/sessionImportService";
 import { listTokens, setTokenHidden, trackToken } from "../service/tokenService";
 import {
   createTransfer,
@@ -208,6 +209,29 @@ export function createAdminRouter(): Router {
       res.status(201).json(
         await generateSessionWalletsFromPool(userId(req), requireUuid(req.params.sessionId, "sessionId"), req.body)
       );
+    })
+  );
+
+  // Import a session's already-generated wallets (with their own keys) into a pool.
+  router.get(
+    "/pools/:id/import/sessions",
+    wrap(async (req, res) => res.json(await listImportableSessions(userId(req), requireUuid(req.params.id, "id"))))
+  );
+
+  router.post(
+    "/pools/:id/import/session/preview",
+    wrap(async (req, res) => {
+      noStore(res);
+      res.json(await previewSessionImport(userId(req), requireUuid(req.params.id, "id"), req.body));
+    })
+  );
+
+  router.post(
+    "/pools/:id/import/session",
+    requireRecentReauth,
+    wrap(async (req, res) => {
+      noStore(res);
+      res.status(201).json(await importSessionWallets(userId(req), requireUuid(req.params.id, "id"), req.body));
     })
   );
 

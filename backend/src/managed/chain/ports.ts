@@ -42,7 +42,10 @@ export type PoolRow = Pick<
 export type WalletRow = Pick<
   ManagedWallet,
   "id" | "poolId" | "derivationIndex" | "address" | "status"
->;
+> & {
+  /** IMPORTED wallets sign with their own stored key; absent means DERIVED. */
+  keySource?: ManagedWallet["keySource"];
+};
 
 /** One ACTIVE wallet address, as returned by `listActiveAddressesByNetwork`. */
 export interface ActiveWalletAddress {
@@ -181,6 +184,8 @@ export interface AuditInput {
 export interface VaultPort {
   /** Throws when the key vault is unavailable or the ciphertext is invalid. */
   decryptMnemonic(poolId: string): Promise<string>;
+  /** Private key of an IMPORTED wallet. Throws when missing or undecryptable. */
+  decryptWalletKey?(walletId: string): Promise<string>;
 }
 
 export interface PoolsPort {

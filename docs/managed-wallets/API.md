@@ -120,6 +120,28 @@ column) and tracks the session token.
 Response 201 `{ "status": "done", "sessionId": "…", "pool": PoolSummary, "created": 5, "fromIndex": 1, "toIndex": 5 }`
 Errors: 409 `NO_POOL_FOR_WALLET`, `POOL_NETWORK_MISMATCH`, `POOL_ARCHIVED`, `POOL_LIMIT_REACHED`, `SESSION_BUSY`; 404 `SESSION_NOT_FOUND`.
 
+## Import a session's wallets
+
+Brings a distribution session's existing (possibly funded) wallets into a pool as
+IMPORTED wallets. Keys are rebuilt server side from the session's stored seed
+(standard path or the pre-d58b556 path) or `output/wallets.csv`, used only when
+they reproduce the wallet's address, and stored AES-256-GCM encrypted with AAD
+`managed-wallet:<walletId>` (migration 0004). The worker signs IMPORTED wallets
+with that key; gas top-ups still come from the pool master.
+
+### GET /pools/:id/import/sessions
+The caller's own sessions on the pool's network that have wallets:
+`{ network, sessions: [{ id, shortId, status, tokenName, walletCount, inThisPool, inOtherPools, mode: "HD"|"INDEPENDENT"|"POOL", hasSeed, createdAt }] }`.
+
+### POST /pools/:id/import/session/preview
+Request `{ "sessionId": "…" }`. Writes nothing, returns no key material:
+`{ sessionId, mode, total, importable, alreadyInPool, inOtherPools, keysUnavailable, keySource: "SESSION_SEED"|"WALLETS_CSV"|"MIXED"|null, remaining }`.
+
+### POST /pools/:id/import/session  **reauth**
+Request `{ "sessionId": "…" }`. Response 201: the preview fields plus `{ imported, fromIndex, toIndex, pool }`.
+Wallets already in this pool or another pool, or without a recoverable key, are skipped (counted).
+Errors: 404 `SESSION_NOT_FOUND`, 409 `POOL_NETWORK_MISMATCH`, `POOL_ARCHIVED`, `POOL_LIMIT_REACHED`, `ALREADY_IMPORTED`.
+
 ## Deposits and treasury
 
 ### GET /pools/:id/deposits?skip=0&limit=50&asset=

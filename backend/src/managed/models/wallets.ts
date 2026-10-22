@@ -1,4 +1,5 @@
 import { randomUUID, randomBytes } from "crypto";
+import type { EncryptedSecret } from "../keyVault";
 import { ManagedWallet, ManagedWalletStatus, Network, PoolStatus } from "../types";
 import {
   CHUNK_SIZE,
@@ -28,6 +29,21 @@ export interface NewManagedWallet {
   label?: string | null;
   /** 64 hex chars. Generated when omitted. */
   viewToken?: string;
+}
+
+/** An IMPORTED wallet: its id is fixed up front because it is the AAD of its encrypted key. */
+export interface NewImportedWallet {
+  id: string;
+  poolId: string;
+  derivationIndex: number;
+  address: string;
+  label: string | null;
+  key: EncryptedSecret;
+}
+
+/** AAD binding an imported key's ciphertext to its wallet row. */
+export function importedKeyAad(walletId: string): string {
+  return `managed-wallet:${walletId}`;
 }
 
 export interface ManagedWalletPatch {
@@ -63,6 +79,7 @@ function mapWallet(row: any): ManagedWallet {
     poolId: row.pool_id,
     derivationIndex: row.derivation_index,
     address: row.address,
+    keySource: row.key_source === "IMPORTED" ? "IMPORTED" : "DERIVED",
     label: row.label ?? null,
     holderName: row.holder_name ?? null,
     holderEmail: row.holder_email ?? null,
@@ -132,6 +149,90 @@ export const wallets = {
     }
 
     return created;
+  },
+
+  /**
+   * Inserts IMPORTED wallets with their encrypted keys in one transaction
+   * (all or nothing). Indexes come from pools.reserveIndexes.
+   */
+  async insertImported(rows: NewImportedWallet[]): Promise<Array<{ id: string; derivationIndex: number; address: string }>> {
+    const pool = requirePool();
+    const client = await pool.connect();
+    const created: Array<{ id: string; derivationIndex: number; address: string }> = [];
+    const now = new Date();
+    try {
+      await client.query("BEGIN");
+      for (let i = 0; i < rows.length; i += CHUNK_SIZE) {
+        const chunk = rows.slice(i, i + CHUNK_SIZE);
+        const values = chunk.flatMap((w) => [
+          w.id,
+          w.poolId,
+          w.derivationIndex,
+          w.address,
+          w.label,
+          newViewToken(),
+          now,
+          w.key.ciphertext,
+          w.key.iv,
+          w.key.tag,
+          w.key.keyVersion,
+        ]);
+        const result = await client.query(
+          `
+            INSERT INTO managed_wallets (
+              id, pool_id, derivation_index, address, label, view_token, created_at,
+              key_source, key_ciphertext, key_iv, key_tag, key_version
+            )
+            SELECT v.id::uuid, v.pool_id::uuid, v.derivation_index::int, v.address, v.label,
+                   v.view_token, v.created_at::timestamptz,
+                   'IMPORTED', v.key_ciphertext, v.key_iv, v.key_tag, v.key_version::int
+            FROM (VALUES ${valuesList(chunk.length, 11)})
+              AS v(id, pool_id, derivation_index, address, label, view_token, created_at,
+                   key_ciphertext, key_iv, key_tag, key_version)
+            RETURNING id, derivation_index, address
+          `,
+          values
+        );
+        for (const row of result.rows) {
+          created.push({ id: row.id, derivationIndex: row.derivation_index, address: row.address });
+        }
+      }
+      await client.query("COMMIT");
+    } catch (err) {
+      await client.query("ROLLBACK").catch(() => undefined);
+      throw err;
+    } finally {
+      client.release();
+    }
+    return created;
+  },
+
+  /** Encrypted key of an IMPORTED wallet; null for DERIVED or missing wallets. */
+  async getImportedKey(walletId: string): Promise<EncryptedSecret | null> {
+    const pool = requirePool();
+    const result = await pool.query(
+      `SELECT key_ciphertext, key_iv, key_tag, key_version FROM managed_wallets
+        WHERE id = $1 AND key_source = 'IMPORTED'`,
+      [walletId]
+    );
+    const row = result.rows[0];
+    if (!row) return null;
+    return { ciphertext: row.key_ciphertext, iv: row.key_iv, tag: row.key_tag, keyVersion: row.key_version };
+  },
+
+  /** Which of these addresses already belong to any pool (case-insensitive). */
+  async findPoolsByAddresses(addresses: string[]): Promise<Map<string, string>> {
+    const pool = requirePool();
+    const owners = new Map<string, string>();
+    for (let i = 0; i < addresses.length; i += CHUNK_SIZE) {
+      const chunk = addresses.slice(i, i + CHUNK_SIZE).map((a) => a.toLowerCase());
+      const result = await pool.query(
+        `SELECT lower(address) AS address, pool_id FROM managed_wallets WHERE lower(address) = ANY($1::text[])`,
+        [chunk]
+      );
+      for (const row of result.rows) owners.set(row.address, row.pool_id);
+    }
+    return owners;
   },
 
   async findById(id: string): Promise<ManagedWalletRecord | null> {

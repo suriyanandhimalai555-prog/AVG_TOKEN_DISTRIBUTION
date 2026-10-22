@@ -53,6 +53,7 @@ export type ManagedAuditAction =
   | "POOL_ARCHIVED"
   | "MNEMONIC_REVEALED"
   | "WALLETS_GENERATED"
+  | "WALLETS_IMPORTED"
   | "WALLET_ASSIGNED"
   | "WALLET_STATUS_CHANGED"
   | "VIEW_TOKEN_ROTATED"
@@ -117,11 +118,19 @@ export interface BalanceEntry {
   hidden: boolean;
 }
 
+/**
+ * DERIVED: the key comes from the pool secret at derivationIndex.
+ * IMPORTED: the wallet's own private key is stored encrypted (migration 0004);
+ * the pool secret is not a backup for it.
+ */
+export type WalletKeySource = "DERIVED" | "IMPORTED";
+
 export interface ManagedWallet {
   id: string;
   poolId: string;
   derivationIndex: number;
   address: string;
+  keySource: WalletKeySource;
   label: string | null;
   holderName: string | null;
   holderEmail: string | null;

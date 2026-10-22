@@ -558,11 +558,34 @@ export class TransferWorker {
     } finally {
       mnemonic = "";
     }
+    if (wallet.keySource === "IMPORTED") {
+      // The master still comes from the pool secret (gas top-ups); the wallet
+      // itself signs with its own imported key.
+      let key: string;
+      try {
+        if (!this.deps.vault.decryptWalletKey) throw new Error("no wallet-key vault");
+        key = await this.deps.vault.decryptWalletKey(wallet.id);
+      } catch {
+        throw new WorkerFailure("KEY_VAULT_UNAVAILABLE", "Could not decrypt the imported wallet key");
+      }
+      try {
+        signers = { master: signers.master, child: new Wallet(key) };
+      } catch {
+        throw new WorkerFailure("UNKNOWN", "Decrypted wallet key is not a valid private key");
+      } finally {
+        key = "";
+      }
+    }
     if (!sameAddress(signers.master.address, pool.masterAddress)) {
       throw new WorkerFailure("UNKNOWN", "Derived master address does not match the pool");
     }
     if (!sameAddress(signers.child.address, wallet.address)) {
-      throw new WorkerFailure("UNKNOWN", "Derived child address does not match the wallet");
+      throw new WorkerFailure(
+        "UNKNOWN",
+        wallet.keySource === "IMPORTED"
+          ? "Imported key does not match the wallet address"
+          : "Derived child address does not match the wallet"
+      );
     }
     return signers;
   }

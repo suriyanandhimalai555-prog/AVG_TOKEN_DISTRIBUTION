@@ -55,6 +55,9 @@ import type {
   WalletViewResponse,
   SessionPoolGenerateResponse,
   SessionPoolMatch,
+  ListImportableSessionsResponse,
+  SessionImportPreview,
+  SessionImportResponse,
 } from "@/lib/managedTypes";
 
 /** Same base the shared axios instance uses (see lib/api.ts). */
@@ -142,6 +145,24 @@ export const managedApi = {
       `${ADMIN}/sessions/${encodeURIComponent(sessionId)}/generate`,
       { privateKey }
     );
+    return data;
+  },
+
+  // Import a distribution session's wallets (keys rebuilt server-side) into a pool.
+  async listImportableSessions(poolId: string): Promise<ListImportableSessionsResponse> {
+    const { data } = await api.get<ListImportableSessionsResponse>(`${ADMIN}/pools/${encodeURIComponent(poolId)}/import/sessions`);
+    return data;
+  },
+
+  async previewSessionImport(poolId: string, sessionId: string): Promise<SessionImportPreview> {
+    const { data } = await api.post<SessionImportPreview>(`${ADMIN}/pools/${encodeURIComponent(poolId)}/import/session/preview`, {
+      sessionId,
+    });
+    return data;
+  },
+
+  async importSessionWallets(poolId: string, sessionId: string): Promise<SessionImportResponse> {
+    const { data } = await api.post<SessionImportResponse>(`${ADMIN}/pools/${encodeURIComponent(poolId)}/import/session`, { sessionId });
     return data;
   },
 
