@@ -24,17 +24,9 @@ jobs:
             set -u
             NS=holderforge
             echo "=== pods ==="
-            kubectl get pods -n "$NS" -o wide
-            echo "=== backend autoscaler ==="
-            kubectl get hpa holderforge-backend -n "$NS"
-            echo "=== image has the scripts' shared code (no script is run) ==="
-            kubectl exec -n "$NS" deploy/holderforge-backend -- ls -la src/lib/distributionBatching.ts
-            kubectl exec -n "$NS" deploy/holderforge-backend -- npx ts-node -e "const b = require('./src/lib/distributionBatching'); console.log('distributionBatching exports:', Object.keys(b).join(', '))"
-            echo "=== startup and errors from every backend pod ==="
-            for P in $(kubectl get pods -n "$NS" -l app=holderforge-backend -o jsonpath='{.items[*].metadata.name}'); do
-              echo "----- $P -----"
-              kubectl logs "$P" -n "$NS" --tail=2000 \
-                | grep -iE 'error|fail|timeout|ECONN|too many|\[sessions|\[prepare|\[generate|\[distribute|PostgreSQL|known tokens|routes mounted|worker started|indexer started' \
-                | grep -vE 'eth_getLogs block range rejected|at (createTSError|reportTSError|getOutput|Object|Module|Function|wrapModuleLoad|node:)' \
-                | tail -40
-            done
+            kubectl get pods -n "$NS"
+            echo "=== session route errors with context ==="
+            kubectl logs deploy/holderforge-backend -n "$NS" --tail=5000 \
+              | grep -A 25 -E '\[sessions' \
+              | grep -vE '^\s+at (node:|Module|Function|Object\.<anonymous>|process\.processTicksAndRejections)' \
+              | tail -90
