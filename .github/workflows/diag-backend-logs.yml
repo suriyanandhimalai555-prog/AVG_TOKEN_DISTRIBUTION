@@ -26,11 +26,7 @@ jobs:
             echo "=== pods and autoscaler ==="
             kubectl get pods -n "$NS"
             kubectl get hpa holderforge-backend -n "$NS"
-            echo "=== contract files Distribute loads (read-only) ==="
-            kubectl exec -n "$NS" deploy/holderforge-backend -- sh -c 'cd /app && for c in MultiSender ABCToken; do node -e "const a=require(\"./artifacts/contracts/$c.sol/$c.json\"); console.log(\"$c: abi entries\", a.abi.length)"; done'
-            echo "=== hardhat: anything left to compile? ==="
-            kubectl exec -n "$NS" deploy/holderforge-backend -- sh -c 'cd /app && npx hardhat compile 2>&1 | grep -v "npm notice" | tail -2'
-            echo "=== errors since startup ==="
-            kubectl logs deploy/holderforge-backend -n "$NS" --tail=2000 \
-              | grep -iE 'error|fail|\[sessions|\[prepare|\[distribute|known tokens|worker started' \
-              | grep -vE 'eth_getLogs block range rejected' | tail -20
+            echo "=== startup and errors since startup ==="
+            kubectl logs deploy/holderforge-backend -n "$NS" --tail=3000 \
+              | grep -iE 'error|fail|CROSS_SITE|\[sessions|\[prepare|\[distribute|\[generate|PostgreSQL|known tokens|routes mounted|worker started|indexer started' \
+              | grep -vE 'eth_getLogs block range rejected' | tail -30
