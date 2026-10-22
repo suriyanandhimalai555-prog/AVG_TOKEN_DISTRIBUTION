@@ -23,21 +23,18 @@ jobs:
           script: |
             set -u
             NS=holderforge
-            echo "=== deployment replicas (spec / ready) ==="
-            kubectl get deploy -n "$NS" -o custom-columns=NAME:.metadata.name,SPEC:.spec.replicas,READY:.status.readyReplicas,AVAILABLE:.status.availableReplicas
-            echo "=== autoscalers ==="
-            kubectl get hpa -n "$NS" -o wide 2>&1 || true
-            kubectl get scaledobject -n "$NS" 2>&1 | head -5 || true
-            echo "=== recent scaling / pod events ==="
-            kubectl get events -n "$NS" --sort-by=.lastTimestamp 2>/dev/null | grep -iE 'scal|replica|Created pod|Killing|OOM|BackOff|Unhealthy' | tail -25
-            echo "=== deployment last-applied replicas and managers ==="
-            kubectl get deploy holderforge-backend -n "$NS" -o jsonpath='{.metadata.annotations.kubectl\.kubernetes\.io/last-applied-configuration}' | grep -o '"replicas":[0-9]*' || true
-            kubectl get deploy holderforge-backend -n "$NS" -o jsonpath='{range .metadata.managedFields[*]}{.manager}{" "}{.operation}{" "}{.time}{"\n"}{end}'
-            echo "=== errors from EVERY backend pod (last 2000 lines each) ==="
+            echo "=== pods ==="
+            kubectl get pods -n "$NS" -o wide
+            echo "=== backend autoscaler ==="
+            kubectl get hpa holderforge-backend -n "$NS"
+            echo "=== image has the scripts' shared code (no script is run) ==="
+            kubectl exec -n "$NS" deploy/holderforge-backend -- ls -la src/lib/distributionBatching.ts
+            kubectl exec -n "$NS" deploy/holderforge-backend -- npx ts-node -e "const b = require('./src/lib/distributionBatching'); console.log('distributionBatching exports:', Object.keys(b).join(', '))"
+            echo "=== startup and errors from every backend pod ==="
             for P in $(kubectl get pods -n "$NS" -l app=holderforge-backend -o jsonpath='{.items[*].metadata.name}'); do
               echo "----- $P -----"
               kubectl logs "$P" -n "$NS" --tail=2000 \
-                | grep -iE 'error|fail|timeout|ECONN|too many|\[sessions|\[prepare\]|\[generate|\[distribute|PostgreSQL|remaining connection|terminat' \
+                | grep -iE 'error|fail|timeout|ECONN|too many|\[sessions|\[prepare|\[generate|\[distribute|PostgreSQL|known tokens|routes mounted|worker started|indexer started' \
                 | grep -vE 'eth_getLogs block range rejected|at (createTSError|reportTSError|getOutput|Object|Module|Function|wrapModuleLoad|node:)' \
                 | tail -40
             done
