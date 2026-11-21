@@ -1,0 +1,505 @@
+name: Deploy AVG Token Distribution
+
+on:
+  workflow_run:
+    workflows:
+      - Build AVG Token Distribution
+    branches:
+      - main
+    types:
+      - completed
+
+concurrency:
+  group: holderforge-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  packages: read
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_OWNER: suriyanandhimalai555-prog
+  BACKEND_IMAGE: ghcr.io/suriyanandhimalai555-prog/avg-token-backend
+  FRONTEND_IMAGE: ghcr.io/suriyanandhimalai555-prog/avg-token-frontend
+  NAMESPACE: holderforge
+
+jobs:
+  deploy:
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    name: Deploy to k3s
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      - name: Deploy to k3s
+        uses: appleboy/ssh-action@v1.2.2
+        env:
+          IMAGE_TAG: ${{ github.event.workflow_run.head_sha }}
+          GHCR_USERNAME: ${{ secrets.GHCR_USERNAME }}
+          GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
+          WALLET_ENCRYPTION_KEY: ${{ secrets.WALLET_ENCRYPTION_KEY }}
+
+        with:
+          host: ${{ secrets.HOST }}
+          username: ${{ secrets.USERNAME }}
+          key: ${{ secrets.SSH_KEY }}
+          port: ${{ secrets.PORT }}
+          envs: IMAGE_TAG,GHCR_USERNAME,GHCR_TOKEN,WALLET_ENCRYPTION_KEY
+          script_stop: true
+
+          script: |
+            set -euo pipefail
+
+            APP_DIR="$HOME/otp/apps/AVG_TOKEN_DISTRIBUTION/combined-repo"
+            NAMESPACE="holderforge"
+
+            cd "$APP_DIR"
+
+            echo ""
+            echo "=================================================="
+            echo "AVG TOKEN DISTRIBUTION DEPLOYMENT"
+            echo "=================================================="
+            echo "Commit: ${IMAGE_TAG}"
+            echo "Namespace: ${NAMESPACE}"
+            echo "=================================================="
+
+            echo ""
+            echo "Validating deployment commit..."
+
+            case "$IMAGE_TAG" in
+              *[!0-9a-f]*|'')
+                echo "ERROR: Invalid deployment commit SHA."
+                exit 1
+                ;;
+            esac
+
+            if [ "${#IMAGE_TAG}" -ne 40 ]; then
+              echo "ERROR: Expected a 40-character Git commit SHA."
+              exit 1
+            fi
+
+            echo "Fetching exact deployment commit..."
+
+            git fetch --no-tags origin "$IMAGE_TAG"
+
+            git cat-file -e "${IMAGE_TAG}^{commit}"
+
+            echo "Verified deployment commit: ${IMAGE_TAG}"
+
+            BACKEND_EXISTS="no"
+            FRONTEND_EXISTS="no"
+
+            rollback_deployment() {
+              echo ""
+              echo "=================================================="
+              echo "DEPLOYMENT FAILED"
+              echo "STARTING AUTOMATIC ROLLBACK"
+              echo "=================================================="
+
+              if [ "$BACKEND_EXISTS" = "yes" ]; then
+                echo "Rolling back backend..."
+
+                kubectl rollout undo \
+                  deployment/holderforge-backend \
+                  -n "$NAMESPACE" || true
+
+                kubectl rollout status \
+                  deployment/holderforge-backend \
+                  -n "$NAMESPACE" \
+                  --timeout=60s || true
+              else
+                echo "Removing newly created backend deployment..."
+
+                kubectl delete deployment holderforge-backend \
+                  -n "$NAMESPACE" \
+                  --ignore-not-found=true
+              fi
+
+              if [ "$FRONTEND_EXISTS" = "yes" ]; then
+                echo "Rolling back frontend..."
+
+                kubectl rollout undo \
+                  deployment/holderforge-frontend \
+                  -n "$NAMESPACE" || true
+
+                kubectl rollout status \
+                  deployment/holderforge-frontend \
+                  -n "$NAMESPACE" \
+                  --timeout=60s || true
+              else
+                echo "Removing newly created frontend deployment..."
+
+                kubectl delete deployment holderforge-frontend \
+                  -n "$NAMESPACE" \
+                  --ignore-not-found=true
+              fi
+
+              echo "PVC preserved."
+              echo "Existing unrelated applications untouched."
+              echo "Rollback attempted."
+              exit 1
+            }
+
+            echo ""
+            echo "Checking Kubernetes cluster..."
+
+            kubectl cluster-info >/dev/null
+
+            echo "Kubernetes cluster is reachable."
+
+            echo ""
+            echo "Applying namespace from deployment commit..."
+
+            git show "${IMAGE_TAG}:k8s/namespace.yaml" |
+              kubectl apply -f -
+
+            echo ""
+            echo "Updating GHCR pull secret..."
+
+            kubectl create secret docker-registry holderforge-ghcr \
+              --namespace "$NAMESPACE" \
+              --docker-server=ghcr.io \
+              --docker-username="$GHCR_USERNAME" \
+              --docker-password="$GHCR_TOKEN" \
+              --dry-run=client \
+              -o yaml | kubectl apply -f -
+
+            echo "GHCR pull secret ready."
+
+            echo ""
+            echo "Checking Managed Wallets encryption key..."
+
+            if [ -z "${WALLET_ENCRYPTION_KEY:-}" ]; then
+              echo "GitHub encryption key not supplied."
+              echo "Existing key left unchanged."
+
+            elif ! kubectl get secret holderforge-backend-env \
+              -n "$NAMESPACE" >/dev/null 2>&1; then
+
+              echo "Backend environment secret not found."
+              echo "Key not changed."
+
+            else
+              CURRENT_KEY="$(
+                kubectl get secret holderforge-backend-env \
+                  -n "$NAMESPACE" \
+                  -o jsonpath='{.data.WALLET_ENCRYPTION_KEY}' |
+                  base64 -d 2>/dev/null || true
+              )"
+
+              if [ -z "$CURRENT_KEY" ]; then
+                echo "Existing wallet encryption key is empty."
+                echo "Adding configured key..."
+
+                WALLET_KEY_B64="$(
+                  printf '%s' "$WALLET_ENCRYPTION_KEY" |
+                    base64 | tr -d '\n'
+                )"
+
+                kubectl patch secret holderforge-backend-env \
+                  -n "$NAMESPACE" \
+                  --type merge \
+                  -p "{\"data\":{\"WALLET_ENCRYPTION_KEY\":\"${WALLET_KEY_B64}\"}}"
+
+                unset WALLET_KEY_B64
+
+                echo "Wallet encryption key added."
+
+              elif [ "$CURRENT_KEY" = "$WALLET_ENCRYPTION_KEY" ]; then
+                echo "Existing wallet encryption key matches."
+
+              else
+                echo "Existing wallet encryption key differs."
+                echo "Existing key will NOT be replaced."
+              fi
+
+              unset CURRENT_KEY
+            fi
+
+            echo ""
+            echo "Applying backend persistent storage from deployment commit..."
+
+            git show "${IMAGE_TAG}:k8s/backend-storage.yaml" |
+              kubectl apply -f -
+
+            echo "PVC configuration applied."
+            echo "Existing PVC will be preserved."
+
+            echo ""
+            echo "Checking existing deployments..."
+
+            if kubectl get deployment holderforge-backend \
+              -n "$NAMESPACE" >/dev/null 2>&1; then
+              BACKEND_EXISTS="yes"
+            fi
+
+            if kubectl get deployment holderforge-frontend \
+              -n "$NAMESPACE" >/dev/null 2>&1; then
+              FRONTEND_EXISTS="yes"
+            fi
+
+            echo "Existing backend: $BACKEND_EXISTS"
+            echo "Existing frontend: $FRONTEND_EXISTS"
+
+            if kubectl get hpa holderforge-backend \
+              -n "$NAMESPACE" >/dev/null 2>&1; then
+
+              kubectl patch hpa holderforge-backend \
+                -n "$NAMESPACE" \
+                --type merge \
+                -p '{"spec":{"minReplicas":1,"maxReplicas":1}}' >/dev/null
+
+              echo "Backend HPA pinned to one replica."
+            fi
+
+            echo ""
+            echo "Applying backend deployment from exact commit..."
+
+            git show "${IMAGE_TAG}:k8s/backend.yaml" |
+              sed "s#__IMAGE_TAG__#${IMAGE_TAG}#g" |
+              kubectl apply -f -
+
+            echo ""
+            echo "Applying frontend deployment from exact commit..."
+
+            git show "${IMAGE_TAG}:k8s/frontend.yaml" |
+              sed "s#__IMAGE_TAG__#${IMAGE_TAG}#g" |
+              kubectl apply -f -
+
+            echo ""
+            echo "Applying ingress from exact commit..."
+
+            git show "${IMAGE_TAG}:k8s/ingress.yaml" |
+              kubectl apply -f -
+
+            echo ""
+            echo "Waiting for backend and frontend rollouts..."
+
+            kubectl rollout status \
+              deployment/holderforge-backend \
+              -n "$NAMESPACE" \
+              --timeout=300s \
+              > /tmp/holderforge-backend-rollout.log 2>&1 &
+
+            BACKEND_ROLLOUT_PID=$!
+
+            kubectl rollout status \
+              deployment/holderforge-frontend \
+              -n "$NAMESPACE" \
+              --timeout=300s \
+              > /tmp/holderforge-frontend-rollout.log 2>&1 &
+
+            FRONTEND_ROLLOUT_PID=$!
+
+            BACKEND_ROLLOUT_RESULT=0
+            FRONTEND_ROLLOUT_RESULT=0
+
+            wait "$BACKEND_ROLLOUT_PID" || BACKEND_ROLLOUT_RESULT=$?
+            wait "$FRONTEND_ROLLOUT_PID" || FRONTEND_ROLLOUT_RESULT=$?
+
+            echo ""
+            echo "BACKEND ROLLOUT:"
+            cat /tmp/holderforge-backend-rollout.log || true
+
+            echo ""
+            echo "FRONTEND ROLLOUT:"
+            cat /tmp/holderforge-frontend-rollout.log || true
+
+            if [ "$BACKEND_ROLLOUT_RESULT" -ne 0 ]; then
+              echo "Backend rollout failed."
+              rollback_deployment
+            fi
+
+            if [ "$FRONTEND_ROLLOUT_RESULT" -ne 0 ]; then
+              echo "Frontend rollout failed."
+              rollback_deployment
+            fi
+
+            echo ""
+            echo "Both application rollouts succeeded."
+
+            echo ""
+            echo "Current pod status..."
+
+            kubectl get pods \
+              -n "$NAMESPACE" \
+              -l app=holderforge-backend \
+              -o wide
+
+            kubectl get pods \
+              -n "$NAMESPACE" \
+              -l app=holderforge-frontend \
+              -o wide
+
+            select_ready_pod() {
+              local label="$1"
+
+              kubectl get pods \
+                -n "$NAMESPACE" \
+                -l "$label" \
+                -o jsonpath='{range .items[*]}{.metadata.name}{"|"}{.metadata.deletionTimestamp}{"|"}{.status.phase}{"|"}{.status.containerStatuses[0].ready}{"\n"}{end}' \
+                2>/dev/null |
+                awk -F'|' '$2 == "" && $3 == "Running" && $4 == "true" {print $1; exit}' ||
+                true
+            }
+
+            echo ""
+            echo "Checking backend internal health..."
+
+            BACKEND_HEALTHY="no"
+            BACKEND_POD=""
+
+            for attempt in $(seq 1 10); do
+              BACKEND_POD="$(select_ready_pod "app=holderforge-backend")"
+
+              if [ -z "$BACKEND_POD" ]; then
+                echo "No ready backend pod found ($attempt/10)."
+                sleep 3
+                continue
+              fi
+
+              echo "Backend pod: $BACKEND_POD"
+
+              if kubectl --request-timeout=15s exec \
+                -n "$NAMESPACE" "$BACKEND_POD" \
+                -- node -e "
+                  fetch('http://holderforge-backend:4002/health')
+                    .then(async r => {
+                      console.log('HTTP status:', r.status);
+                      console.log(await r.text());
+                      if (!r.ok) process.exit(1);
+                    })
+                    .catch(err => {
+                      console.error(err);
+                      process.exit(1);
+                    });
+                "; then
+
+                BACKEND_HEALTHY="yes"
+                break
+              fi
+
+              echo "Backend health check failed. Retrying..."
+              sleep 3
+            done
+
+            if [ "$BACKEND_HEALTHY" != "yes" ]; then
+              echo "Backend internal health check failed."
+              rollback_deployment
+            fi
+
+            echo "Backend internal health successful."
+
+            echo ""
+            echo "=================================================="
+            echo "DATABASE MIGRATIONS"
+            echo "=================================================="
+
+            # Run the idempotent migration runner.
+            # A migration failure must fail deployment.
+            # The migration runner uses a transaction per migration.
+
+            if kubectl --request-timeout=120s exec \
+              -n "$NAMESPACE" "$BACKEND_POD" \
+              -- node dist/migrate.js; then
+
+              echo "Database migrations completed successfully."
+
+            else
+              echo "ERROR: Database migration failed."
+              echo "Starting application rollback."
+              rollback_deployment
+            fi
+
+            echo ""
+            echo "Database migration step completed."
+
+            echo ""
+            echo "Checking frontend internal health..."
+
+            FRONTEND_HEALTHY="no"
+
+            for attempt in $(seq 1 10); do
+              FRONTEND_POD="$(select_ready_pod "app=holderforge-frontend")"
+
+              if [ -z "$FRONTEND_POD" ]; then
+                echo "No ready frontend pod found ($attempt/10)."
+                sleep 3
+                continue
+              fi
+
+              echo "Frontend pod: $FRONTEND_POD"
+
+              if kubectl --request-timeout=15s exec \
+                -n "$NAMESPACE" "$FRONTEND_POD" \
+                -- wget -q --spider http://holderforge-frontend/; then
+
+                FRONTEND_HEALTHY="yes"
+                break
+              fi
+
+              echo "Frontend health check failed. Retrying..."
+              sleep 3
+            done
+
+            if [ "$FRONTEND_HEALTHY" != "yes" ]; then
+              echo "Frontend internal health check failed."
+              rollback_deployment
+            fi
+
+            echo "Frontend internal health successful."
+
+            echo ""
+            echo "Checking external HTTPS ingress..."
+
+            INGRESS_OK="no"
+
+            for attempt in $(seq 1 10); do
+              echo "Ingress check $attempt/10..."
+
+              if \
+                curl -fsS --max-time 5 \
+                  https://holderforge.io/ >/dev/null \
+                && \
+                curl -fsS --max-time 5 \
+                  https://www.holderforge.io/ >/dev/null \
+                && \
+                curl -fsS --max-time 5 \
+                  https://holderforge.io/health >/dev/null
+              then
+                INGRESS_OK="yes"
+                break
+              fi
+
+              sleep 3
+            done
+
+            if [ "$INGRESS_OK" != "yes" ]; then
+              echo "External HTTPS ingress health check failed."
+              rollback_deployment
+            fi
+
+            echo ""
+            echo "=================================================="
+            echo "DEPLOYMENT SUCCESSFUL"
+            echo "=================================================="
+            echo "Commit: ${IMAGE_TAG}"
+            echo "Namespace: ${NAMESPACE}"
+            echo "https://holderforge.io"
+            echo "https://www.holderforge.io"
+            echo "https://holderforge.io/health"
+            echo ""
+            echo "Backend rollout: SUCCESS"
+            echo "Frontend rollout: SUCCESS"
+            echo "Backend health: SUCCESS"
+            echo "Frontend health: SUCCESS"
+            echo "Database migrations: SUCCESS"
+            echo "HTTPS ingress: SUCCESS"
+            echo "PVC preserved."
+            echo "Unrelated applications untouched."
+            echo "=================================================="

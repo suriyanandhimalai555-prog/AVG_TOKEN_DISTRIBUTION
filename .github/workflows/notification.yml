@@ -1,0 +1,276 @@
+name: AVG Token Distribution Notifications
+
+on:
+  workflow_run:
+    workflows:
+      - Build AVG Token Distribution
+      - Deploy AVG Token Distribution
+    branches:
+      - main
+    types:
+      - completed
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  notify:
+    name: Send Microsoft Graph Email Notification
+    runs-on: ubuntu-latest
+    if: >-
+      (github.event.workflow_run.name == 'Build AVG Token Distribution' &&
+       github.event.workflow_run.conclusion != 'success') ||
+      (github.event.workflow_run.name == 'Deploy AVG Token Distribution')
+
+    steps:
+      - name: Send notification via Microsoft Graph
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MS_CLIENT_ID: ${{ secrets.MS_CLIENT_ID }}
+          MS_CLIENT_SECRET: ${{ secrets.MS_CLIENT_SECRET }}
+          MS_TENANT_ID: ${{ secrets.MS_TENANT_ID }}
+          MS_SENDER_EMAIL: ${{ secrets.MS_SENDER_EMAIL }}
+          MAIL_TO: ${{ secrets.MAIL_TO }}
+          MAIL_CC: ${{ secrets.MAIL_CC }}
+          WORKFLOW_NAME: ${{ github.event.workflow_run.name }}
+          CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          REPOSITORY: ${{ github.event.workflow_run.repository.full_name }}
+          BRANCH: ${{ github.event.workflow_run.head_branch }}
+          COMMIT_SHA: ${{ github.event.workflow_run.head_sha }}
+          ACTOR: ${{ github.event.workflow_run.actor.login }}
+          RUN_URL: ${{ github.event.workflow_run.html_url }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+        run: |
+          node <<'NODE'
+          const esc = (s = '') => String(s).replace(/[&<>"']/g, c => ({
+            '&': '&amp;',
+            '<': '&lt;',
+            '>': '&gt;',
+            '"': '&quot;',
+            "'": '&#39;'
+          }[c]));
+
+          const splitEmails = s =>
+            (s || '').split(',').map(x => x.trim()).filter(Boolean);
+
+          (async () => {
+            const workflowName = process.env.WORKFLOW_NAME;
+            let conclusion = process.env.CONCLUSION;
+            let notificationType = '';
+            let title = '';
+            let subject = '';
+            let status = '';
+
+            /*
+             * BUILD FAILURE
+             * Notify only when the build workflow did not succeed.
+             */
+            if (workflowName === 'Build AVG Token Distribution') {
+              if (conclusion === 'success') {
+                console.log('Build succeeded. No build-failure notification required.');
+                return;
+              }
+
+              notificationType = 'BUILD';
+              title = 'Docker Build Failed';
+              subject = 'FAILED: AVG Token Distribution Docker Build';
+              status = 'BUILD FAILED';
+            }
+
+            /*
+             * DEPLOYMENT RESULT
+             * Inspect the actual deploy job instead of trusting the
+             * overall workflow conclusion.
+             */
+            else if (workflowName === 'Deploy AVG Token Distribution') {
+              const jobsUrl =
+                `https://api.github.com/repos/${process.env.REPOSITORY}` +
+                `/actions/runs/${process.env.RUN_ID}/jobs`;
+
+              const jobsRes = await fetch(jobsUrl, {
+                headers: {
+                  Authorization: `Bearer ${process.env.GH_TOKEN}`,
+                  Accept: 'application/vnd.github+json',
+                  'X-GitHub-Api-Version': '2022-11-28'
+                }
+              });
+
+              if (!jobsRes.ok) {
+                throw new Error(
+                  `GitHub Jobs API failed with HTTP ${jobsRes.status}`
+                );
+              }
+
+              const jobsJson = await jobsRes.json();
+
+              const deployJob = jobsJson.jobs.find(job =>
+                job.id === 'deploy' ||
+                job.name === 'Deploy to k3s'
+              );
+
+              if (!deployJob) {
+                throw new Error('Deployment job was not found in the workflow run.');
+              }
+
+              console.log(`Deployment job conclusion: ${deployJob.conclusion}`);
+
+              /*
+               * Build failure can cause the deploy workflow to be skipped.
+               * Do not send a false deployment-success notification.
+               */
+              if (
+                deployJob.conclusion === 'skipped' ||
+                deployJob.conclusion === null
+              ) {
+                console.log('Deployment was skipped. No deployment email sent.');
+                return;
+              }
+
+              notificationType = 'DEPLOYMENT';
+
+              if (deployJob.conclusion === 'success') {
+                title = 'Deployment Successful';
+                subject = 'AVG Token Distribution Kubernetes Deployment Successful';
+                status = 'DEPLOYMENT SUCCESSFUL';
+              } else {
+                title = 'Deployment Failed';
+                subject = 'FAILED: AVG Token Distribution Kubernetes Deployment';
+                status = 'DEPLOYMENT FAILED';
+                conclusion = deployJob.conclusion;
+              }
+            } else {
+              console.log('Unrecognized workflow. No notification sent.');
+              return;
+            }
+
+            /*
+             * Microsoft OAuth2 client credentials
+             */
+            const tokenRes = await fetch(
+              `https://login.microsoftonline.com/${encodeURIComponent(process.env.MS_TENANT_ID)}/oauth2/v2.0/token`,
+              {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/x-www-form-urlencoded'
+                },
+                body: new URLSearchParams({
+                  client_id: process.env.MS_CLIENT_ID,
+                  client_secret: process.env.MS_CLIENT_SECRET,
+                  scope: 'https://graph.microsoft.com/.default',
+                  grant_type: 'client_credentials'
+                })
+              }
+            );
+
+            const tokenJson = await tokenRes.json();
+
+            if (!tokenRes.ok || !tokenJson.access_token) {
+              throw new Error(
+                `Microsoft OAuth token request failed (HTTP ${tokenRes.status})`
+              );
+            }
+
+            console.log('::add-mask::' + tokenJson.access_token);
+
+            const rows = [
+              ['Workflow', workflowName],
+              ['Repository', process.env.REPOSITORY],
+              ['Branch', process.env.BRANCH],
+              ['Triggered by', process.env.ACTOR],
+              ['Commit SHA', process.env.COMMIT_SHA],
+              ['Workflow Result', conclusion],
+              ['Namespace', 'holderforge'],
+              ['Notification Type', notificationType]
+            ];
+
+            const table = rows.map(([k, v]) =>
+              `<tr>
+                <td style="padding:9px;border:1px solid #ddd;font-weight:bold">${esc(k)}</td>
+                <td style="padding:9px;border:1px solid #ddd">${esc(v)}</td>
+              </tr>`
+            ).join('');
+
+            const runLink = process.env.RUN_URL;
+
+            const html = `
+              <!doctype html>
+              <html>
+              <body style="font-family:Arial,sans-serif;color:#222">
+                <h2>${esc(title)}</h2>
+                <table style="border-collapse:collapse;width:100%">
+                  ${table}
+                </table>
+                <p>
+                  <a href="${esc(runLink)}">View workflow run</a>
+                </p>
+                <h3>${esc(status)}</h3>
+                <p>
+                  Holderforge:
+                  <a href="https://holderforge.io">
+                    https://holderforge.io
+                  </a>
+                </p>
+                <p>
+                  API health:
+                  <a href="https://holderforge.io/health">
+                    https://holderforge.io/health
+                  </a>
+                </p>
+              </body>
+              </html>
+            `;
+
+            const to = splitEmails(process.env.MAIL_TO)
+              .map(address => ({
+                emailAddress: { address }
+              }));
+
+            const cc = splitEmails(process.env.MAIL_CC)
+              .map(address => ({
+                emailAddress: { address }
+              }));
+
+            if (!to.length) {
+              throw new Error('MAIL_TO is empty');
+            }
+
+            const msg = {
+              message: {
+                subject,
+                body: {
+                  contentType: 'HTML',
+                  content: html
+                },
+                toRecipients: to,
+                ccRecipients: cc
+              },
+              saveToSentItems: true
+            };
+
+            const sendRes = await fetch(
+              `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(process.env.MS_SENDER_EMAIL)}/sendMail`,
+              {
+                method: 'POST',
+                headers: {
+                  Authorization: `Bearer ${tokenJson.access_token}`,
+                  'Content-Type': 'application/json'
+                },
+                body: JSON.stringify(msg)
+              }
+            );
+
+            if (!sendRes.ok) {
+              throw new Error(
+                `Microsoft Graph sendMail failed HTTP ${sendRes.status}`
+              );
+            }
+
+            console.log(
+              `Microsoft Graph accepted ${status} notification. HTTP ${sendRes.status}.`
+            );
+          })().catch(err => {
+            console.error(err.message);
+            process.exit(1);
+          });
+          NODE
