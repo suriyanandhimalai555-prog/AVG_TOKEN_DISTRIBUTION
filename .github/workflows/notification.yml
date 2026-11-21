@@ -30,9 +30,9 @@ jobs:
           MS_CLIENT_ID: ${{ secrets.MS_CLIENT_ID }}
           MS_CLIENT_SECRET: ${{ secrets.MS_CLIENT_SECRET }}
           MS_TENANT_ID: ${{ secrets.MS_TENANT_ID }}
-          MS_SENDER_EMAIL: ${{ secrets.MS_SENDER_EMAIL }}
-          MAIL_TO: ${{ secrets.MAIL_TO }}
-          MAIL_CC: ${{ secrets.MAIL_CC }}
+          MS_SENDER_EMAIL: ${{ vars.MS_SENDER_EMAIL }}
+          MAIL_TO: ${{ vars.MAIL_TO }}
+          MAIL_CC: ${{ vars.MAIL_CC }}
           WORKFLOW_NAME: ${{ github.event.workflow_run.name }}
           CONCLUSION: ${{ github.event.workflow_run.conclusion }}
           REPOSITORY: ${{ github.event.workflow_run.repository.full_name }}
