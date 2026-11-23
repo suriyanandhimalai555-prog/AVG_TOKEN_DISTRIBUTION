@@ -41,7 +41,7 @@ function ChainBadge() {
 }
 
 export function WalletButton() {
-  const { address, status, disconnect } = useWallet();
+  const { address, status, disconnect, accounts, switchAccounts, setActiveAddress } = useWallet();
   const [modalOpen, setModalOpen] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
 
@@ -83,9 +83,49 @@ export function WalletButton() {
 
       {menuOpen && (
         <>
-          {/* click-away layer */}
           <div className="fixed inset-0 z-40" onClick={() => setMenuOpen(false)} aria-hidden />
-          <div className="absolute right-0 z-50 mt-1 w-44 rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] py-1 shadow-lg">
+          <div className="absolute right-0 z-50 mt-1 w-48 rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] py-1 shadow-lg">
+            {accounts.length > 1 && (
+              <>
+                <div className="px-2 py-1">
+                  <span className="block text-[10px] font-semibold uppercase tracking-wide text-[var(--app-muted)]">Accounts</span>
+                  {accounts.map((addr) => (
+                    <button
+                      key={addr}
+                      type="button"
+                      onClick={() => {
+                        setActiveAddress(addr);
+                        setMenuOpen(false);
+                        toast.success(`Account ${shortAddress(addr)}`);
+                      }}
+                      className={`flex w-full items-center gap-2 px-3 py-2 text-left text-xs transition ${
+                        addr === address
+                          ? "bg-accent/10 text-accent border-l-2 border-accent"
+                          : "text-[var(--app-text)] hover:bg-accent/10"
+                      }`}
+                    >
+                      <span className="font-mono">{shortAddress(addr)}</span>
+                      {addr === address && (
+                        <span className="ml-auto text-[10px] font-semibold text-success">Active</span>
+                      )}
+                    </button>
+                  ))}
+                </div>
+                <div className="px-2 py-1 border-t border-[var(--app-border)]" />
+              </>
+            )}
+            <button
+              type="button"
+              onClick={() => {
+                void switchAccounts();
+                setMenuOpen(false);
+                toast.success("Account picker opened — choose in your wallet");
+              }}
+              className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-[var(--app-text)] hover:bg-accent/10"
+            >
+              <AlertTriangle size={13} aria-hidden />
+              Switch account
+            </button>
             <button
               type="button"
               onClick={copyAddress}
