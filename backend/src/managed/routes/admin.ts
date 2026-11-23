@@ -47,6 +47,13 @@ import {
   rotateViewToken,
   updateWallet,
 } from "../service/walletService";
+import {
+  createMonitoredAddress,
+  deleteMonitoredAddress,
+  getMonitoredAddress,
+  listMonitoredAddresses,
+  updateMonitoredAddress,
+} from "../service/monitoredAddressService";
 import type { HealthResponse } from "../types";
 
 type AsyncHandler = (req: Request, res: Response) => Promise<unknown>;
@@ -386,6 +393,60 @@ export function createAdminRouter(): Router {
     wrap(async (req, res) =>
       res.json(await setTokenHidden(userId(req), requireUuid(req.params.id, "id"), req.body))
     )
+  );
+
+  // ─── Monitored addresses (internal tool) ────────────────────────────────
+
+  router.get(
+    "/monitored-addresses",
+    wrap(async (req, res) =>
+      res.json({ addresses: await listMonitoredAddresses(userId(req)) })
+    )
+  );
+
+  router.post(
+    "/monitored-addresses",
+    requireRecentReauth,
+    wrap(async (req, res) => {
+      noStore(res);
+      const created = await createMonitoredAddress(userId(req), req.body as Record<string, unknown>);
+      res.status(201).json({ address: created });
+    })
+  );
+
+  router.get(
+    "/monitored-addresses/:id",
+    wrap(async (req, res) => {
+      const address = await getMonitoredAddress(
+        requireUuid(req.params.id, "id"),
+        userId(req)
+      );
+      res.json({ address });
+    })
+  );
+
+  router.patch(
+    "/monitored-addresses/:id",
+    requireRecentReauth,
+    wrap(async (req, res) => {
+      noStore(res);
+      const updated = await updateMonitoredAddress(
+        requireUuid(req.params.id, "id"),
+        userId(req),
+        req.body as Record<string, unknown>
+      );
+      res.json({ address: updated });
+    })
+  );
+
+  router.delete(
+    "/monitored-addresses/:id",
+    requireRecentReauth,
+    wrap(async (req, res) => {
+      noStore(res);
+      await deleteMonitoredAddress(requireUuid(req.params.id, "id"), userId(req));
+      res.json({ ok: true });
+    })
   );
 
   // ─── Indexer ────────────────────────────────────────────────────────────────

@@ -66,7 +66,10 @@ export type ManagedAuditAction =
   | "TRANSFER_FAILED"
   | "SWEEP_REQUESTED"
   | "INDEXER_RUN_REQUESTED"
-  | "EXPORT_DOWNLOADED";
+  | "EXPORT_DOWNLOADED"
+  | "MONITORED_ADDRESS_CREATED"
+  | "MONITORED_ADDRESS_UPDATED"
+  | "MONITORED_ADDRESS_DELETED";
 
 /** Standard API error envelope. */
 export interface ApiError {

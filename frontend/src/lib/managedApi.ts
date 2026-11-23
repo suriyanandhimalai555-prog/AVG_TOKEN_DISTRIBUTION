@@ -228,6 +228,37 @@ export const managedApi = {
     return data;
   },
 
+  // Monitored addresses (internal tool)
+  async listMonitoredAddresses(): Promise<ListMonitoredAddressesResponse> {
+    const { data } = await api.get<ListMonitoredAddressesResponse>(`${ADMIN}/monitored-addresses`);
+    return data;
+  },
+
+  async createMonitoredAddress(req: CreateMonitoredAddressRequest): Promise<CreateMonitoredAddressResponse> {
+    const { data } = await api.post<CreateMonitoredAddressResponse>(`${ADMIN}/monitored-addresses`, req);
+    return data;
+  },
+
+  async getMonitoredAddress(id: string): Promise<GetMonitoredAddressResponse> {
+    const { data } = await api.get<GetMonitoredAddressResponse>(
+      `${ADMIN}/monitored-addresses/${encodeURIComponent(id)}`
+    );
+    return data;
+  },
+
+  async updateMonitoredAddress(id: string, req: UpdateMonitoredAddressRequest): Promise<UpdateMonitoredAddressResponse> {
+    const { data } = await api.patch<UpdateMonitoredAddressResponse>(
+      `${ADMIN}/monitored-addresses/${encodeURIComponent(id)}`,
+      req
+    );
+    return data;
+  },
+
+  async deleteMonitoredAddress(id: string): Promise<{ ok: boolean }> {
+    const { data } = await api.delete<{ ok: boolean }>(`${ADMIN}/monitored-addresses/${encodeURIComponent(id)}`);
+    return data;
+  },
+
   async listTransfers(q: ListTransfersQuery = {}): Promise<ListTransfersResponse> {
     const { data } = await api.get<ListTransfersResponse>(`${ADMIN}/transfers`, {
       params: params({ poolId: q.poolId, batchId: q.batchId, status: q.status, skip: q.skip, limit: q.limit }),

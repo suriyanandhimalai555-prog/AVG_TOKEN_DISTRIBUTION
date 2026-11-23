@@ -19,6 +19,7 @@ import PoolDetailPage from "./PoolDetailPage";
 import TransferJobsPage from "./TransferJobsPage";
 import ManagedSettingsPage from "./ManagedSettingsPage";
 import TreasuryPage from "./TreasuryPage";
+import MonitoredAddressesPage from "./MonitoredAddressesPage";
 import ManagedGate from "@/components/managed/ManagedGate";
 
 export interface ManagedAdminRoute {
@@ -33,6 +34,7 @@ const gated = (page: ReactElement): ReactElement => <ManagedGate>{page}</Managed
 export const managedAdminRoutes: ManagedAdminRoute[] = [
   { path: "managed", element: gated(<PoolsPage />) },
   { path: "managed/pools/:poolId", element: gated(<PoolDetailPage />) },
+  { path: "managed/monitored-addresses", element: gated(<MonitoredAddressesPage />) },
   { path: "managed/transfers", element: gated(<TransferJobsPage />) },
   { path: "managed/settings", element: gated(<ManagedSettingsPage />) },
   { path: "treasury", element: gated(<TreasuryPage />) },

@@ -65,7 +65,10 @@ export type ManagedAuditAction =
   | "TRANSFER_FAILED"
   | "SWEEP_REQUESTED"
   | "INDEXER_RUN_REQUESTED"
-  | "EXPORT_DOWNLOADED";
+  | "EXPORT_DOWNLOADED"
+  | "MONITORED_ADDRESS_CREATED"
+  | "MONITORED_ADDRESS_UPDATED"
+  | "MONITORED_ADDRESS_DELETED";
 
 /** Standard API error envelope. */
 export interface ApiError {
@@ -592,3 +595,46 @@ export interface WalletViewResponse {
   }>;
   updatedAt: string | null;
 }
+
+// ─── Monitored addresses (internal tool) ──────────────────────────────────────
+
+export interface MonitoredAddress {
+  id: string;
+  ownerUserId: string;
+  name: string;
+  address: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ListMonitoredAddressesResponse {
+  addresses: MonitoredAddress[];
+}
+
+export interface CreateMonitoredAddressRequest {
+  name: string;
+  address: string;
+  privateKey: string;
+}
+export interface CreateMonitoredAddressResponse {
+  address: MonitoredAddressWithKey;
+}
+
+export interface GetMonitoredAddressResponse {
+  address: MonitoredAddressWithKey;
+}
+
+export interface UpdateMonitoredAddressRequest {
+  name?: string;
+  address?: string;
+  privateKey?: string;
+}
+export interface UpdateMonitoredAddressResponse {
+  address: MonitoredAddressWithKey;
+}
+
+/** Monitored address returned WITH the plaintext private key (create/update only). */
+export interface MonitoredAddressWithKey extends MonitoredAddress {
+  privateKey: string;
+}
+
