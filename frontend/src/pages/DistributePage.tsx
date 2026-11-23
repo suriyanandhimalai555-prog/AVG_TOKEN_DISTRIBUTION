@@ -29,7 +29,7 @@ export default function DistributePage() {
 
   const sessionId = store.getSessionId();
   const qc = useQueryClient();
-  const privateKey = store.getPrivateKey();
+  const signer = store.getSigner();
   const [loadingStart, setLoadingStart] = useState(false);
   const [loadingStop, setLoadingStop] = useState(false);
   const [delayMode, setDelayMode] = useState(false);
@@ -46,14 +46,15 @@ export default function DistributePage() {
   });
 
   const { data: preflight } = useQuery({
-    queryKey: ["preflight", sessionId, privateKey, sessionData?.session?.network],
+    queryKey: ["preflight", sessionId, signer, sessionData?.session?.network],
     queryFn: () =>
-      estimateApi
-        .preflight(sessionId, privateKey!, sessionData?.session?.network)
-        .then((r) => r.data),
+      (signer?.mode === "wallet"
+        ? estimateApi.preflightAddress(sessionId, signer.address, sessionData?.session?.network)
+        : estimateApi.preflight(sessionId, signer?.privateKey ?? "", sessionData?.session?.network)
+      ).then((r) => r.data),
     enabled:
       !!sessionId &&
-      !!privateKey &&
+      !!signer &&
       !!sessionData?.session?.tokenAddress,
     staleTime: 30_000,
   });
@@ -83,11 +84,18 @@ export default function DistributePage() {
   }, [isDone]);
 
   async function startDistribute() {
-    const pk = store.getPrivateKey();
-    if (!pk) {
-      toast.error("Private key not found — go back to Setup");
+    const activeSigner = store.getSigner();
+    if (!activeSigner) {
+      toast.error("No signing wallet — go back to Setup");
       return;
     }
+    if (activeSigner.mode === "wallet") {
+      // Phase 3 (client-signed distribution) is not wired yet: the backend
+      // distribution scripts sign server-side and require the pasted key.
+      toast.error("Distribution currently requires a pasted private key — connect is used for preview, estimates and deploy. Paste your key in Setup to distribute.", { duration: 6000 });
+      return;
+    }
+    const pk = activeSigner.privateKey;
     setLoadingStart(true);
     try {
       const sessionRes = await sessionsApi.get(sessionId);

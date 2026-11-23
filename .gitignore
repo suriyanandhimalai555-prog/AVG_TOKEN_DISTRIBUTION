@@ -36,3 +36,4 @@ backend/output/
 .DS_Store
 .vscode/
 .idea/
+.gstack/

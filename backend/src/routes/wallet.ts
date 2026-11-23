@@ -30,6 +30,86 @@ function resolveTestnetRpcUrl(): string {
   );
 }
 
+/**
+ * Read-only wallet preview for a given ADDRESS (no key material).
+ * Shared by /preview (legacy, pk-derived address) and /preview-address
+ * (browser-wallet mode, address supplied by the connected wallet).
+ */
+async function buildPreview(account: string, tokenAddress: string, network: Network) {
+  const mainnetRpcUrl = resolveMainnetRpcUrl();
+  if (!mainnetRpcUrl) return { error: "Mainnet RPC URL missing in backend .env" as const };
+
+  const testnetRpcUrl = resolveTestnetRpcUrl();
+  const mainnetProvider = new ethers.JsonRpcProvider(mainnetRpcUrl);
+
+  const bnbWei = await mainnetProvider.getBalance(account);
+  const bnbBalance = ethers.formatEther(bnbWei);
+  let tBnbBalance = "0";
+  if (testnetRpcUrl) {
+    try {
+      const testnetProvider = new ethers.JsonRpcProvider(testnetRpcUrl);
+      const tBnbWei = await testnetProvider.getBalance(account);
+      tBnbBalance = ethers.formatEther(tBnbWei);
+    } catch {
+      // keep default 0 if testnet RPC is temporarily unavailable
+    }
+  }
+
+  let tokenData:
+    | {
+        address: string;
+        name: string;
+        symbol: string;
+        decimals: number;
+        balance: string;
+      }
+    | undefined;
+  let tokenError: string | undefined;
+  let tokenOnSelectedNetwork = false;
+  let tokenOnSelectedNetworkError: string | undefined;
+
+  try {
+    // Token metadata/balance are intentionally fetched from MAINNET
+    // so known mainnet token addresses (e.g., NOVA) still resolve
+    // even when user selects testnet for sending route.
+    const token = new ethers.Contract(tokenAddress, ERC20_ABI, mainnetProvider);
+    const [nameRaw, decimalsRaw, symbolRaw, tokenBalRaw] = await Promise.all([
+      token.name(),
+      token.decimals(),
+      token.symbol(),
+      token.balanceOf(account),
+    ]);
+
+    const decimals = Number(decimalsRaw);
+    tokenData = {
+      address: tokenAddress,
+      name: String(nameRaw),
+      symbol: String(symbolRaw),
+      decimals,
+      balance: ethers.formatUnits(tokenBalRaw, decimals),
+    };
+    tokenOnSelectedNetwork = true;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "Token not found on selected network";
+    tokenOnSelectedNetworkError = msg;
+    tokenError = msg;
+  }
+
+  return {
+    payload: {
+      account,
+      network,
+      nativeSymbol: network === "bscTestnet" ? "tBNB" : "BNB",
+      bnbBalance,
+      tBnbBalance,
+      tokenOnSelectedNetwork,
+      tokenOnSelectedNetworkError,
+      token: tokenData,
+      tokenError,
+    },
+  };
+}
+
 router.post("/preview", requireAuth, requirePlan, async (req: Request, res: Response) => {
   try {
     const { privateKey, tokenAddress, network } = req.body as {
@@ -45,79 +125,44 @@ router.post("/preview", requireAuth, requirePlan, async (req: Request, res: Resp
       return res.status(400).json({ error: "network must be bscMainnet or bscTestnet" });
     }
 
-    const mainnetRpcUrl = resolveMainnetRpcUrl();
-    if (!mainnetRpcUrl) return res.status(500).json({ error: "Mainnet RPC URL missing in backend .env" });
-    const testnetRpcUrl = resolveTestnetRpcUrl();
-
     const normalizedPk = privateKey.startsWith("0x") ? privateKey : `0x${privateKey}`;
-    const mainnetProvider = new ethers.JsonRpcProvider(mainnetRpcUrl);
-    const wallet = new ethers.Wallet(normalizedPk, mainnetProvider);
-    const account = wallet.address;
-
-    const bnbWei = await mainnetProvider.getBalance(account);
-    const bnbBalance = ethers.formatEther(bnbWei);
-    let tBnbBalance = "0";
-    if (testnetRpcUrl) {
-      try {
-        const testnetProvider = new ethers.JsonRpcProvider(testnetRpcUrl);
-        const tBnbWei = await testnetProvider.getBalance(account);
-        tBnbBalance = ethers.formatEther(tBnbWei);
-      } catch {
-        // keep default 0 if testnet RPC is temporarily unavailable
-      }
-    }
-
-    let tokenData:
-      | {
-          address: string;
-          name: string;
-          symbol: string;
-          decimals: number;
-          balance: string;
-        }
-      | undefined;
-    let tokenError: string | undefined;
-    let tokenOnSelectedNetwork = false;
-    let tokenOnSelectedNetworkError: string | undefined;
-
+    let account: string;
     try {
-      // Token metadata/balance are intentionally fetched from MAINNET
-      // so known mainnet token addresses (e.g., NOVA) still resolve
-      // even when user selects testnet for sending route.
-      const token = new ethers.Contract(tokenAddress, ERC20_ABI, mainnetProvider);
-      const [nameRaw, decimalsRaw, symbolRaw, tokenBalRaw] = await Promise.all([
-        token.name(),
-        token.decimals(),
-        token.symbol(),
-        token.balanceOf(account),
-      ]);
-
-      const decimals = Number(decimalsRaw);
-      tokenData = {
-        address: tokenAddress,
-        name: String(nameRaw),
-        symbol: String(symbolRaw),
-        decimals,
-        balance: ethers.formatUnits(tokenBalRaw, decimals),
-      };
-      tokenOnSelectedNetwork = true;
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : "Token not found on selected network";
-      tokenOnSelectedNetworkError = msg;
-      tokenError = msg;
+      account = new ethers.Wallet(normalizedPk).address;
+    } catch {
+      return res.status(400).json({ error: "Invalid privateKey" });
     }
 
-    return res.json({
-      account,
-      network,
-      nativeSymbol: network === "bscTestnet" ? "tBNB" : "BNB",
-      bnbBalance,
-      tBnbBalance,
-      tokenOnSelectedNetwork,
-      tokenOnSelectedNetworkError,
-      token: tokenData,
-      tokenError,
-    });
+    const result = await buildPreview(account, tokenAddress, network);
+    if ("error" in result) return res.status(500).json({ error: result.error });
+    return res.json(result.payload);
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : "Failed to fetch wallet preview";
+    return res.status(500).json({ error: msg });
+  }
+});
+
+// Browser-wallet variant: the connected wallet supplies only its address.
+// No private key is ever sent — signing stays in the user's wallet.
+router.post("/preview-address", requireAuth, requirePlan, async (req: Request, res: Response) => {
+  try {
+    const { address, tokenAddress, network } = req.body as {
+      address: string;
+      tokenAddress: string;
+      network: Network;
+    };
+
+    if (!address?.trim()) return res.status(400).json({ error: "address is required" });
+    if (!ethers.isAddress(address)) return res.status(400).json({ error: "Invalid address" });
+    if (!tokenAddress?.trim()) return res.status(400).json({ error: "tokenAddress is required" });
+    if (!ethers.isAddress(tokenAddress)) return res.status(400).json({ error: "Invalid tokenAddress" });
+    if (network !== "bscMainnet" && network !== "bscTestnet") {
+      return res.status(400).json({ error: "network must be bscMainnet or bscTestnet" });
+    }
+
+    const result = await buildPreview(ethers.getAddress(address), tokenAddress, network);
+    if ("error" in result) return res.status(500).json({ error: result.error });
+    return res.json(result.payload);
   } catch (error) {
     const msg = error instanceof Error ? error.message : "Failed to fetch wallet preview";
     return res.status(500).json({ error: msg });
@@ -125,4 +170,3 @@ router.post("/preview", requireAuth, requirePlan, async (req: Request, res: Resp
 });
 
 export default router;
-

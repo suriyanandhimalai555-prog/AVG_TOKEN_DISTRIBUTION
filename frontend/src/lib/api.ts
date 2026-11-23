@@ -177,11 +177,17 @@ export const deployApi = {
 export const walletApi = {
   preview: (privateKey: string, tokenAddress: string, network: "bscMainnet" | "bscTestnet") =>
     api.post<WalletPreview>("/api/wallet/preview", { privateKey, tokenAddress, network }),
+  /** Browser-wallet variant: address only, no key material. */
+  previewAddress: (address: string, tokenAddress: string, network: "bscMainnet" | "bscTestnet") =>
+    api.post<WalletPreview>("/api/wallet/preview-address", { address, tokenAddress, network }),
 };
 
 export const estimateApi = {
   preflight: (sessionId: string, privateKey: string, network?: "bscMainnet" | "bscTestnet") =>
     api.post<PreflightEstimate>("/api/estimate/preflight", { sessionId, privateKey, network }),
+  /** Browser-wallet variant: address only, no key material. */
+  preflightAddress: (sessionId: string, address: string, network?: "bscMainnet" | "bscTestnet") =>
+    api.post<PreflightEstimate>("/api/estimate/preflight-address", { sessionId, address, network }),
 };
 
 export const sessionsApi = {

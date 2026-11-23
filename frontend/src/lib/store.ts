@@ -5,6 +5,12 @@ let _privateKey = "";
 let _sessionId = "";
 const PK_KEY = "runtimePrivateKey";
 
+/** How the current signing wallet is provided: pasted key or browser wallet. */
+export type SignerMode =
+  | { mode: "pk"; privateKey: string }
+  | { mode: "wallet"; address: string }
+  | null;
+
 export const store = {
   getPrivateKey: () => {
     if (_privateKey) return _privateKey;
@@ -19,6 +25,18 @@ export const store = {
   clearPrivateKey: () => {
     _privateKey = "";
     sessionStorage.removeItem(PK_KEY);
+  },
+
+  /**
+   * The active signer, whichever mode the user chose. Wallet mode never
+   * carries key material — only the address (signing happens in-browser).
+   */
+  getSigner: (): SignerMode => {
+    const walletAddress = localStorage.getItem("walletAddress");
+    if (walletAddress) return { mode: "wallet", address: walletAddress };
+    const pk = store.getPrivateKey();
+    if (pk) return { mode: "pk", privateKey: pk };
+    return null;
   },
 
   getSessionId: () => _sessionId || localStorage.getItem("sessionId") || "",
