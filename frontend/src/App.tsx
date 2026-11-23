@@ -2,6 +2,7 @@ import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Toaster } from "react-hot-toast";
 import { useTheme } from "@/theme/ThemeProvider";
+import { WalletProvider } from "@/context/WalletContext";
 
 import Shell from "@/components/layout/Shell";
 import ProtectedRoute from "@/components/ProtectedRoute";
@@ -67,6 +68,7 @@ function ThemedToaster() {
 export default function App() {
   return (
     <QueryClientProvider client={queryClient}>
+      <WalletProvider>
       <BrowserRouter>
         <Routes>
           <Route path="/" element={<Landing />} />
@@ -136,6 +138,7 @@ export default function App() {
 
         <ThemedToaster />
       </BrowserRouter>
+      </WalletProvider>
     </QueryClientProvider>
   );
 }

@@ -48,7 +48,7 @@ export default function PlanPage() {
   const sessionId = store.getSessionId();
   const [page, setPage] = useState(0);
   const [loading, setLoading] = useState(false);
-  const privateKey = store.getPrivateKey();
+  const signer = store.getSigner();
   const PAGE_SIZE = 20;
 
   const { data: status } = useQuery({
@@ -92,10 +92,11 @@ export default function PlanPage() {
   } = useQuery({
     queryKey: ["preflight", sessionId, status?.totalWallets],
     queryFn: () =>
-      estimateApi
-        .preflight(sessionId, privateKey, sessionData?.session?.network)
-        .then((r) => r.data),
-    enabled: !!sessionId && !!privateKey && !!sessionData?.session?.tokenAddress && wallets.length > 0,
+      (signer?.mode === "wallet"
+        ? estimateApi.preflightAddress(sessionId, signer.address, sessionData?.session?.network)
+        : estimateApi.preflight(sessionId, signer?.privateKey ?? "", sessionData?.session?.network)
+      ).then((r) => r.data),
+    enabled: !!sessionId && !!signer && !!sessionData?.session?.tokenAddress && wallets.length > 0,
     refetchInterval: 15000,
   });
   const totalPages = Math.ceil(total / PAGE_SIZE);
@@ -116,7 +117,7 @@ export default function PlanPage() {
     preflight?.batchSize ?? DEFAULT_MULTI_BATCH_SIZE
   );
   /** Preflight is informational only — user may start distribution regardless of estimates. */
-  const canNavigateToDistribute = wallets.length > 0 && !!privateKey;
+  const canNavigateToDistribute = wallets.length > 0 && !!signer;
   const parallelWorkers = preflight?.workerCount ?? DEFAULT_PARALLEL_WORKERS;
 
   async function handlePrepare() {
@@ -213,7 +214,7 @@ export default function PlanPage() {
           {wallets.length > 0 && !isPreparing && (
             <button
               onClick={() => {
-                if (!privateKey) {
+                if (!signer) {
                   toast.error("Private key not found. Go back to Setup and initialize again.");
                   return;
                 }
@@ -249,12 +250,12 @@ export default function PlanPage() {
               <button
                 onClick={() => refetchPreflight()}
                 className="text-accent hover:underline disabled:opacity-40"
-                disabled={preflightLoading || !privateKey}
+                disabled={preflightLoading || !signer}
               >
                 {preflightLoading ? "CHECKING..." : "REFRESH"}
               </button>
             </div>
-            {!privateKey && (
+            {!signer && (
               <p className="text-warning text-[10px] font-mono">
                 Private key missing in memory. Go Setup and initialize session again.
               </p>
@@ -312,13 +313,13 @@ export default function PlanPage() {
                       <button
                         type="button"
                         onClick={() => {
-                          if (!privateKey) {
+                          if (!signer) {
                             toast.error("Private key not found. Go back to Setup and initialize again.");
                             return;
                           }
                           navigate("/dashboard/distribute");
                         }}
-                        disabled={!privateKey}
+                        disabled={!signer}
                         className="w-full py-2 border border-success text-success font-mono text-[10px] uppercase tracking-widest hover:bg-success hover:text-black transition-colors disabled:opacity-40"
                       >
                         Start distribution

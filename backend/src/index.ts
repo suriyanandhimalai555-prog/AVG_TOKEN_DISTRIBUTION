@@ -17,6 +17,7 @@ import exportRouter from "./routes/export";
 import batchesRouter from "./routes/batches";
 import configRouter from "./routes/config";
 import deployRouter from "./routes/deploy";
+import contractsRouter from "./routes/contracts";
 import walletRouter from "./routes/wallet";
 import estimateRouter from "./routes/estimate";
 import authRouter from "./routes/auth";
@@ -225,6 +226,7 @@ app.use("/api/export", exportRouter);
 app.use("/api/batches", batchesRouter);
 app.use("/api/config", configRouter);
 app.use("/api/deploy", deployRouter);
+app.use("/api/contracts", contractsRouter);
 app.use("/api/wallet", walletRouter);
 app.use("/api/estimate", estimateRouter);
 

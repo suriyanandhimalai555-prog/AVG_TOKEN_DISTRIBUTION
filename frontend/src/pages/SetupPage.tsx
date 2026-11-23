@@ -12,6 +12,9 @@ import { store } from "@/lib/store";
 import { isValidPrivateKey } from "@/lib/utils";
 import { useAuth } from "@/hooks/useAuth";
 import { useTheme } from "@/theme/ThemeProvider";
+import { useWallet } from "@/context/WalletContext";
+import { WalletButton } from "@/components/wallet/WalletButton";
+import { deployMultisenderClientSide } from "@/lib/signing";
 import { useManagedEnabled } from "@/components/managed/client";
 import CreatePoolFromSetupDialog, { type SetupPoolOffer } from "@/components/managed/CreatePoolFromSetupDialog";
 
@@ -119,6 +122,9 @@ export default function SetupPage() {
 
   // ── The effective multisender address used when creating session ─────────
   const multisenderAddress = showManualInput ? manualAddress : deployedAddress;
+  const wallet = useWallet();
+  /** Signing mode: a connected browser wallet wins over a pasted key when both are present. */
+  const usingWallet = wallet.status === "connected" && !!wallet.address;
   const hasActivePlan = subscription?.status === "ACTIVE";
   const canUseSetup = hasActivePlan || user?.role === "ADMIN";
   const selectedNetworkLabel = NETWORKS.find((n) => n.value === selectedNetwork)?.label ?? "Unknown";
@@ -197,22 +203,29 @@ export default function SetupPage() {
 
   const pkForPreview = privateKey.trim();
   const tokenForPreview = tokenAddress.trim();
-  const canPreview = isValidPrivateKey(pkForPreview) && isValidAddress(tokenForPreview);
+  /** Wallet mode previews from the connected address; pk mode from the pasted key. */
+  const canPreview = usingWallet
+    ? isValidAddress(tokenForPreview)
+    : isValidPrivateKey(pkForPreview) && isValidAddress(tokenForPreview);
 
   const {
     data: walletPreview,
     isFetching: previewLoading,
     error: previewError,
   } = useQuery({
-    queryKey: ["wallet-preview", pkForPreview, tokenForPreview, selectedNetwork],
+    queryKey: ["wallet-preview", usingWallet, wallet.address, pkForPreview, tokenForPreview, selectedNetwork],
     queryFn: () =>
-      walletApi
-        .preview(
-          pkForPreview.startsWith("0x") ? pkForPreview : `0x${pkForPreview}`,
-          tokenForPreview,
-          selectedNetwork
-        )
-        .then((r) => r.data),
+      usingWallet
+        ? walletApi
+            .previewAddress(wallet.address!, tokenForPreview, selectedNetwork)
+            .then((r) => r.data)
+        : walletApi
+            .preview(
+              pkForPreview.startsWith("0x") ? pkForPreview : `0x${pkForPreview}`,
+              tokenForPreview,
+              selectedNetwork
+            )
+            .then((r) => r.data),
     enabled: canPreview,
     retry: 0,
     refetchOnWindowFocus: false,
@@ -256,6 +269,44 @@ export default function SetupPage() {
 
   // ── Deploy MultiSender ──────────────────────────────────────────────────
   async function handleDeploy() {
+    // Client-side deploy from the connected wallet (no key leaves the browser).
+    if (usingWallet) {
+      if (wallet.network !== selectedNetwork) {
+        toast.error(
+          `Wallet is on the wrong chain — switch to ${NETWORKS.find((n) => n.value === selectedNetwork)?.label ?? selectedNetwork} first (use the chain badge in the top bar).`,
+          { duration: 6000 }
+        );
+        return;
+      }
+      const provider = wallet.getProvider();
+      if (!provider) {
+        toast.error("Wallet provider unavailable — reconnect");
+        return;
+      }
+
+      setDeploying(true);
+      const netLabel = NETWORKS.find((n) => n.value === selectedNetwork)?.label ?? selectedNetwork;
+      const toastId = toast.loading(`Deploying MultiSender to ${netLabel} via your wallet... (confirm in the wallet extension)`);
+
+      try {
+        const result = await deployMultisenderClientSide(provider, selectedNetwork);
+        setDeployedAddress(result.address);
+        setDeployNetwork(netLabel);
+        setShowManualInput(false);
+        toast.success(`Deployed! ${result.address.slice(0, 10)}...${result.address.slice(-6)}`, { id: toastId });
+      } catch (err: unknown) {
+        const e = err as { code?: number; message?: string; shortMessage?: string };
+        const msg =
+          e.code === 4001
+            ? "Deployment rejected in wallet"
+            : e.shortMessage || e.message || "Deployment failed. Check that your wallet has enough BNB for gas.";
+        toast.error(msg, { id: toastId, duration: 8000 });
+      } finally {
+        setDeploying(false);
+      }
+      return;
+    }
+
     if (!validatePrivateKey(privateKey)) {
       toast.error("Enter your Private Key first — it is needed to pay for deployment gas");
       return;
@@ -288,7 +339,8 @@ export default function SetupPage() {
 
   // ── Create session ───────────────────────────────────────────────────────
   function validateAllInputs(): boolean {
-    const pkOk = validatePrivateKey(privateKey);
+    // Wallet mode: no pk required — the connected wallet is the signer.
+    const pkOk = usingWallet || validatePrivateKey(privateKey);
     const taOk = validateTokenAddress(tokenAddress);
 
     // Must have a multisender address — either deployed or manual
@@ -357,20 +409,37 @@ export default function SetupPage() {
 
       store.setSessionId(sessionId);
 
-      const pk = privateKey.trim();
-      const normalizedPk = pk.startsWith("0x") ? pk : `0x${pk}`;
-      store.setPrivateKey(normalizedPk);
-      if (isAdmin && managed.ready) {
-        setPoolOffer({
-          privateKey: normalizedPk,
-          network: selectedNetwork,
-          tokenAddress: tokenAddress.trim(),
-          tokenName: walletPreview?.token?.name,
-          tokenSymbol: walletPreview?.token?.symbol,
-          walletAddress: walletPreview?.account,
-        });
+      if (usingWallet) {
+        // Wallet mode: clear any pasted key; the connected address is the signer.
+        store.clearPrivateKey();
+        if (isAdmin && managed.ready) {
+          setPoolOffer({
+            privateKey: "",
+            network: selectedNetwork,
+            tokenAddress: tokenAddress.trim(),
+            tokenName: walletPreview?.token?.name,
+            tokenSymbol: walletPreview?.token?.symbol,
+            walletAddress: wallet.address ?? undefined,
+          });
+        } else {
+          navigate("/dashboard/generate");
+        }
       } else {
-        navigate("/dashboard/generate");
+        const pk = privateKey.trim();
+        const normalizedPk = pk.startsWith("0x") ? pk : `0x${pk}`;
+        store.setPrivateKey(normalizedPk);
+        if (isAdmin && managed.ready) {
+          setPoolOffer({
+            privateKey: normalizedPk,
+            network: selectedNetwork,
+            tokenAddress: tokenAddress.trim(),
+            tokenName: walletPreview?.token?.name,
+            tokenSymbol: walletPreview?.token?.symbol,
+            walletAddress: walletPreview?.account,
+          });
+        } else {
+          navigate("/dashboard/generate");
+        }
       }
     } catch {
       toast.error("Failed to create session");
@@ -543,9 +612,28 @@ export default function SetupPage() {
         </div>
 
         <div className="grid grid-cols-1 gap-4 md:grid-cols-2 md:gap-5">
-          <DashSection code="02" title="Signing wallet" hint="Your key stays in this browser session only.">
-            <div className="dash-card flex flex-col p-4 sm:p-5">
-              <label className="mb-1.5 block text-xs font-medium text-text-secondary">
+          <DashSection code="02" title="Signing wallet" hint="Connect a browser wallet, or paste a key. Keys stay in this browser session only.">
+            <div className="dash-card flex flex-col gap-3 p-4 sm:p-5">
+              {/* Wallet connect option */}
+              <div className={`flex items-center justify-between gap-3 rounded-lg border p-3 ${usingWallet ? "border-accent/50 bg-accent/5" : "border-border"} ${bgInset}`}>
+                <div className="min-w-0">
+                  <p className={`text-xs font-semibold ${ink}`}>Browser wallet</p>
+                  <p className="mt-0.5 truncate font-mono text-[11px] text-text-secondary">
+                    {usingWallet
+                      ? `${wallet.address?.slice(0, 8)}…${wallet.address?.slice(-6)}${wallet.network ? ` · ${wallet.network === "bscMainnet" ? "BSC Mainnet" : "BSC Testnet"}` : " · wrong chain"}`
+                      : "MetaMask · Trust · Phantom — signs in-wallet, key never shared"}
+                  </p>
+                </div>
+                <WalletButton />
+              </div>
+
+              <div className="flex items-center gap-2">
+                <span className="h-px flex-1 bg-border" />
+                <span className="text-[10px] font-semibold uppercase tracking-wider text-text-secondary">or paste a key</span>
+                <span className="h-px flex-1 bg-border" />
+              </div>
+
+              <label className="mb-0 block text-xs font-medium text-text-secondary">
                 Private key <span className="font-normal text-text-secondary">(in-memory only)</span>
               </label>
               <div className="relative">
@@ -979,8 +1067,12 @@ export default function SetupPage() {
 
             <div className="space-y-0 px-5 py-4 text-xs">
               <div className="flex justify-between gap-3 border-b border-border/50 py-2">
-                <span className="text-text-secondary">Private key</span>
-                <span className={`font-mono ${ink}`}>{maskPrivateKey(privateKey.trim())}</span>
+                <span className="text-text-secondary">Signing wallet</span>
+                <span className={`font-mono ${ink}`}>
+                  {usingWallet
+                    ? `${wallet.address?.slice(0, 8)}…${wallet.address?.slice(-6)} (browser wallet)`
+                    : maskPrivateKey(privateKey.trim())}
+                </span>
               </div>
               <div className="flex justify-between gap-3 border-b border-border/50 py-2">
                 <span className="text-text-secondary">Token</span>

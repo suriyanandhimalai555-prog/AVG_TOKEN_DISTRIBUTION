@@ -3,6 +3,7 @@ import axios from "axios";
 import { statusApi } from "@/lib/api";
 import { store } from "@/lib/store";
 import { fmtBnb, fmt } from "@/lib/utils";
+import { WalletButton } from "@/components/wallet/WalletButton";
 
 export default function TopBar() {
   const sessionId = store.getSessionId();
@@ -67,6 +68,10 @@ export default function TopBar() {
       ) : (
         <div className="flex-1" aria-hidden />
       )}
+
+      <div className="ml-auto flex-shrink-0 pl-4">
+        <WalletButton />
+      </div>
     </div>
   );
 }
