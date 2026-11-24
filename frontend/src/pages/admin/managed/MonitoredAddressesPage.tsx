@@ -123,7 +123,7 @@ export default function MonitoredAddressesPage() {
       ) : (
         <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
           {addresses.map((a) => (
-            <MonitoredAddressCard key={a.id} a={a} editing={editingId === a.id} onEdit={(id) => setEditingId(id)} onCancel={() => setEditingId(null)} onReveal={() => handleReveal(id)} onDelete={(id) => handleDelete(id)} />
+            <MonitoredAddressCard key={a.id} a={a} editing={editingId === a.id} onEdit={(id) => setEditingId(id)} onCancel={() => setEditingId(null)} onReveal={() => void handleReveal(a.id)} onDelete={(id) => void handleDelete(id)} />
           ))}
         </div>
       )}
@@ -141,7 +141,9 @@ export default function MonitoredAddressesPage() {
           key={revealedKey}
           busy={revealBusy}
           onClose={() => { setRevealingId(null); setRevealedKey(null); setRevealBusy(false); }}
-          onReveal={handleReveal}
+          onReveal={() => {
+            if (revealingId) void handleReveal(revealingId);
+          }}
         />
       )}
 
