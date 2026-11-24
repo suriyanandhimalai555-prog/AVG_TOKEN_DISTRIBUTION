@@ -47,10 +47,12 @@ export function rpcUrlsFor(network: Network): string[] {
     network === "bscTestnet"
       ? [env("BSC_TESTNET_RPC_URL"), env("ALCHEMY_RPC_URL"), env("FALLBACK_RPC_1")]
       : [env("ALCHEMY_RPC_URL"), env("FALLBACK_RPC_1"), env("FALLBACK_RPC_2")];
+
   const out: string[] = [];
   for (const url of candidates) {
     if (url && !out.includes(url)) out.push(url);
   }
+
   return out;
 }
 
@@ -59,20 +61,24 @@ const providerCache = new Map<string, JsonRpcProvider>();
 function providerForUrl(network: Network, url: string): JsonRpcProvider {
   const key = `${network}|${url}`;
   let p = providerCache.get(key);
+
   if (!p) {
     const staticNetwork = EthersNetwork.from(CHAIN_IDS[network]);
     p = new JsonRpcProvider(url, staticNetwork, { staticNetwork });
     providerCache.set(key, p);
   }
+
   return p;
 }
 
 /** Primary provider for the network. Throws when no RPC URL is configured. */
 export function providerFor(network: Network): JsonRpcProvider {
   const urls = rpcUrlsFor(network);
+
   if (urls.length === 0) {
     throw new Error(`[managed] no RPC URL configured for ${network}`);
   }
+
   return providerForUrl(network, urls[0]);
 }
 
@@ -107,8 +113,10 @@ const RETRYABLE_PATTERNS = [
 /** True for transient RPC errors worth retrying on another provider. */
 export function isRetryableRpcError(err: unknown): boolean {
   if (!err || typeof err !== "object") return false;
+
   const code = (err as { code?: unknown }).code;
   if (typeof code === "string" && RETRYABLE_CODES.has(code)) return true;
+
   const message = String((err as { message?: unknown }).message ?? "");
   return RETRYABLE_PATTERNS.some((re) => re.test(message));
 }
@@ -121,7 +129,8 @@ export interface WithFallbackOptions {
   sleep?: (ms: number) => Promise<void>;
 }
 
-const defaultSleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+const defaultSleep = (ms: number) =>
+  new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 /**
  * Runs `fn` against the primary provider, retrying across the fallbacks on
@@ -137,24 +146,28 @@ export async function withFallback<T>(
   if (providers.length === 0) {
     throw new Error(`[managed] no RPC URL configured for ${network}`);
   }
+
   const attemptsPerProvider = Math.max(1, options.attemptsPerProvider ?? 2);
   const backoffMs = options.backoffMs ?? 300;
   const sleep = options.sleep ?? defaultSleep;
 
   let lastError: unknown;
   let retry = 0;
+
   for (const provider of providers) {
     for (let attempt = 0; attempt < attemptsPerProvider; attempt++) {
       try {
         return await fn(provider);
       } catch (err) {
         if (!isRetryableRpcError(err)) throw err;
+
         lastError = err;
         retry += 1;
         await sleep(Math.min(backoffMs * 2 ** (retry - 1), 5_000));
       }
     }
   }
+
   throw wrapExhausted(network, lastError);
 }
 
@@ -169,27 +182,45 @@ export async function withFallback<T>(
  * top-level `err.data`) are checked so provider text such as "limit exceeded"
  * is not lost inside an opaque UNKNOWN_ERROR wrapper.
  */
-export function shortRpcError(err: unknown): { code: string | null; message: string } {
-  const obj = err && typeof err === "object" ? (err as Record<string, unknown>) : null;
+export function shortRpcError(
+  err: unknown
+): { code: string | null; message: string } {
+  const obj =
+    err && typeof err === "object"
+      ? (err as Record<string, unknown>)
+      : null;
+
   const code = obj && typeof obj.code === "string" ? obj.code : null;
+
   let raw =
     obj && typeof obj.shortMessage === "string" && obj.shortMessage
       ? obj.shortMessage
       : err instanceof Error
         ? err.message
         : String(err);
+
   const nestedCandidates = [
     (obj?.error as { message?: unknown } | undefined)?.message,
     (obj?.info as { error?: { message?: unknown } } | undefined)?.error?.message,
     (obj?.data as { message?: unknown } | undefined)?.message,
     (obj?.error as { error?: { message?: unknown } } | undefined)?.error?.message,
   ];
+
+  // The predicate must return a boolean, not string | boolean.
   const nested = nestedCandidates.find(
-    (v): v is string => typeof v === "string" && v && !raw.includes(v)
+    (v): v is string =>
+      typeof v === "string" && v.length > 0 && !raw.includes(v)
   );
-  if (typeof nested === "string") raw = `${raw}: ${nested}`;
+
+  if (typeof nested === "string") {
+    raw = `${raw}: ${nested}`;
+  }
+
   // Never carry a raw signed transaction / long hex payload in a message.
-  const message = raw.replace(/0x[0-9a-fA-F]{130,}/g, "0x[hex-redacted]").slice(0, 300);
+  const message = raw
+    .replace(/0x[0-9a-fA-F]{130,}/g, "0x[hex-redacted]")
+    .slice(0, 300);
+
   return { code, message };
 }
 
@@ -202,14 +233,17 @@ export function shortRpcError(err: unknown): { code: string | null; message: str
 function wrapExhausted(network: Network, lastError: unknown): Error {
   const { code, message } = shortRpcError(lastError);
   const shortMessage = `all RPC providers for ${network} failed: ${message}`;
+
   const wrapped = new Error(`[managed] ${shortMessage}`) as Error & {
     code?: string;
     shortMessage?: string;
     cause?: unknown;
   };
+
   wrapped.code = code ?? "NETWORK_ERROR";
   wrapped.shortMessage = shortMessage;
   wrapped.cause = lastError;
+
   return wrapped;
 }
 
@@ -219,7 +253,9 @@ function wrapExhausted(network: Network, lastError: unknown): Error {
  * fakes instead.
  */
 export function resilientProvider(network: Network): ChainProvider {
-  const run = <T>(fn: (p: JsonRpcProvider) => Promise<T>) => withFallback(network, fn);
+  const run = <T>(fn: (provider: JsonRpcProvider) => Promise<T>) =>
+    withFallback(network, fn);
+
   return {
     getBlockNumber: () => run((p) => p.getBlockNumber()),
     getLogs: (filter) => run((p) => p.getLogs(filter)),
@@ -231,6 +267,7 @@ export function resilientProvider(network: Network): ChainProvider {
       run((p) => p.getTransactionCount(address, blockTag)),
     estimateGas: (tx) => run((p) => p.estimateGas(tx)),
     getFeeData: () => run((p) => p.getFeeData()),
-    broadcastTransaction: (signedTx) => run((p) => p.broadcastTransaction(signedTx)),
+    broadcastTransaction: (signedTx) =>
+      run((p) => p.broadcastTransaction(signedTx)),
   };
 }
