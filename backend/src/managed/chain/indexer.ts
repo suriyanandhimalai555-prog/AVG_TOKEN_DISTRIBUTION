@@ -235,6 +235,8 @@ export class ManagedIndexer {
   private readonly backoffUntil = new Map<Network, number>();
   /** Block span per eth_getLogs call, shrunk per network when a provider rejects the range. */
   private readonly blockSpan = new Map<Network, number>();
+  /** Address count per eth_getLogs call, shrunk when a provider caps result size. */
+  private readonly addressSpan = new Map<Network, number>();
   private readonly consecutiveErrors = new Map<Network, number>();
   private stopped = true;
 
@@ -392,9 +394,8 @@ export class ManagedIndexer {
       for (const w of active) {
         walletByAddress.set(w.address.toLowerCase(), { walletId: w.walletId, address: w.address });
       }
-      const paddedChunks = chunk(
-        [...walletByAddress.values()].map((w) => padAddressTopic(w.address)),
-        this.options.addressChunk
+      const paddedAddresses = [...walletByAddress.values()].map((w) =>
+        padAddressTopic(w.address)
       );
 
       const knownTokens = new Set<string>();
@@ -414,6 +415,8 @@ export class ManagedIndexer {
       chunkLoop: while (chunkFrom <= head) {
         const span = this.blockSpan.get(network) ?? this.options.blockChunk;
         const chunkTo = Math.min(chunkFrom + span - 1, head);
+        const addressSpan = this.addressSpan.get(network) ?? this.options.addressChunk;
+        const paddedChunks = chunk(paddedAddresses, addressSpan);
         const rows: DepositInsert[] = [];
 
         if (paddedChunks.length > 0) {
@@ -440,16 +443,21 @@ export class ManagedIndexer {
                 });
                 continue chunkLoop;
               }
-              if (isRangeLimit) {
-                // Span is already at the minimum and the provider still rejects
-                // the range. Skip this block range so the indexer keeps
-                // progressing instead of failing the whole cycle. Deposits in
-                // the skipped blocks are missed until the next cycle; this is
-                // preferable to a stalled indexer that backs off forever.
-                result.logsSkipped += chunkTo - chunkFrom + 1;
-                chunkFrom = chunkTo + 1;
+              if (isRangeLimit && addressSpan > 1) {
+                const smallerAddressSpan = Math.max(1, Math.floor(addressSpan / 2));
+                this.addressSpan.set(network, smallerAddressSpan);
+                this.logger.warn("eth_getLogs result limit reached; shrinking address batch", {
+                  network,
+                  from: addressSpan,
+                  to: smallerAddressSpan,
+                  blockSpan: span,
+                });
                 continue chunkLoop;
               }
+              // Keep the cursor on this block if even a one-block,
+              // one-address query is rejected. Skipping it would permanently
+              // lose deposits; the next cycle can retry after provider/config
+              // changes.
               throw err;
             }
             result.logs += logs.length;
