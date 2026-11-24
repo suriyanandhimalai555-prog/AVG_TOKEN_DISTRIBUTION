@@ -560,8 +560,8 @@ const ALCHEMY_RANGE_ERROR = () =>
 describe("shrinkSpanOnRangeError", () => {
   it("shrinks by 10x down to the minimum on range-limit errors", () => {
     expect(shrinkSpanOnRangeError(ALCHEMY_RANGE_ERROR(), 1000)).toBe(100);
-    expect(shrinkSpanOnRangeError(ALCHEMY_RANGE_ERROR(), 100)).toBe(MIN_LOG_BLOCK_SPAN);
-    expect(shrinkSpanOnRangeError(new Error("query returned more than 10000 results"), 50)).toBe(MIN_LOG_BLOCK_SPAN);
+    expect(shrinkSpanOnRangeError(ALCHEMY_RANGE_ERROR(), 100)).toBe(10);
+    expect(shrinkSpanOnRangeError(new Error("query returned more than 10000 results"), 50)).toBe(5);
     expect(shrinkSpanOnRangeError(new Error("limit exceeded"), 1000)).toBe(100);
   });
   it("returns null at the minimum span and for unrelated errors", () => {

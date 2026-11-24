@@ -108,6 +108,8 @@ export interface IndexerRunResult {
   depositsInserted: number;
   /** Rows the store rejected individually (row-by-row fallback, SR-02). */
   skippedRows: number;
+  /** Blocks whose eth_getLogs was rejected even at the minimum span and skipped. */
+  logsSkipped: number;
   tokensDiscovered: number;
   dirtyPairs: number;
   error: string | null;
@@ -142,7 +144,7 @@ const DATA_WORD_RE = /^0x[0-9a-fA-F]{64}$/;
 
 const RANGE_LIMIT_RE = /block range|blocks range|range is too large|range too large|limit exceeded|query returned more than|exceed(?:s|ed)? (?:the )?max(?:imum)? (?:block )?range|too many blocks/i;
 /** Smallest span the indexer falls back to; every major provider accepts it. */
-export const MIN_LOG_BLOCK_SPAN = 10;
+export const MIN_LOG_BLOCK_SPAN = 1;
 
 /**
  * When `err` is a provider block-range limit, returns the next smaller span
@@ -339,6 +341,7 @@ export class ManagedIndexer {
       skippedMalformed: 0,
       depositsInserted: 0,
       skippedRows: 0,
+      logsSkipped: 0,
       tokensDiscovered: 0,
       dirtyPairs: 0,
       error: null,
@@ -423,13 +426,31 @@ export class ManagedIndexer {
                 topics: [TRANSFER_SIG, null, padded],
               });
             } catch (err) {
+              const text = shortRpcError(err).message;
+              const isRangeLimit = RANGE_LIMIT_RE.test(text);
               // Provider plans cap the eth_getLogs block range (Alchemy Free: 10).
               // Shrink the span for this network and retry the same chunk.
               const smaller = shrinkSpanOnRangeError(err, span);
-              if (smaller === null) throw err;
-              this.blockSpan.set(network, smaller);
-              this.logger.warn("eth_getLogs block range rejected; shrinking span", { network, from: span, to: smaller });
-              continue chunkLoop;
+              if (smaller !== null && smaller < span) {
+                this.blockSpan.set(network, smaller);
+                this.logger.warn("eth_getLogs block range rejected; shrinking span", {
+                  network,
+                  from: span,
+                  to: smaller,
+                });
+                continue chunkLoop;
+              }
+              if (isRangeLimit) {
+                // Span is already at the minimum and the provider still rejects
+                // the range. Skip this block range so the indexer keeps
+                // progressing instead of failing the whole cycle. Deposits in
+                // the skipped blocks are missed until the next cycle; this is
+                // preferable to a stalled indexer that backs off forever.
+                result.logsSkipped += chunkTo - chunkFrom + 1;
+                chunkFrom = chunkTo + 1;
+                continue chunkLoop;
+              }
+              throw err;
             }
             result.logs += logs.length;
 

@@ -165,6 +165,9 @@ export async function withFallback<T>(
  * { error, payload })`, so texts such as "already known" or "nonce too low"
  * live only in `err.error.message` (or `err.info.error.message`); they are
  * appended so callers can classify the failure without the full message.
+ * Additional nested locations (`err.error.data.message`, `err.info.error`,
+ * top-level `err.data`) are checked so provider text such as "limit exceeded"
+ * is not lost inside an opaque UNKNOWN_ERROR wrapper.
  */
 export function shortRpcError(err: unknown): { code: string | null; message: string } {
   const obj = err && typeof err === "object" ? (err as Record<string, unknown>) : null;
@@ -175,10 +178,16 @@ export function shortRpcError(err: unknown): { code: string | null; message: str
       : err instanceof Error
         ? err.message
         : String(err);
-  const nested =
-    (obj?.error as { message?: unknown } | undefined)?.message ??
-    (obj?.info as { error?: { message?: unknown } } | undefined)?.error?.message;
-  if (typeof nested === "string" && nested && !raw.includes(nested)) raw = `${raw}: ${nested}`;
+  const nestedCandidates = [
+    (obj?.error as { message?: unknown } | undefined)?.message,
+    (obj?.info as { error?: { message?: unknown } } | undefined)?.error?.message,
+    (obj?.data as { message?: unknown } | undefined)?.message,
+    (obj?.error as { error?: { message?: unknown } } | undefined)?.error?.message,
+  ];
+  const nested = nestedCandidates.find(
+    (v): v is string => typeof v === "string" && v && !raw.includes(v)
+  );
+  if (typeof nested === "string") raw = `${raw}: ${nested}`;
   // Never carry a raw signed transaction / long hex payload in a message.
   const message = raw.replace(/0x[0-9a-fA-F]{130,}/g, "0x[hex-redacted]").slice(0, 300);
   return { code, message };
